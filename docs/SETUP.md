@@ -1,95 +1,110 @@
-# Configurare Xcode IPA Installer
+# Set up Xcode IPA Installer
 
-## 1. Accedere all’account dentro Xcode
+[Italian guide](SETUP.it.md) · [Back to README](../README.md)
 
-Installa Xcode completo, avvialo almeno una volta e completa le operazioni iniziali, inclusi gli strumenti iOS. I soli Command Line Tools non bastano. Usa Xcode 15 o successivo, con supporto per la versione iOS dell’iPhone.
+## 1. Sign in inside Xcode
 
-1. Con Xcode aperto, premi **⌘ ,** oppure scegli **Xcode → Settings…** dalla barra dei menu.
-2. Nella barra laterale scegli **Apple Accounts**. Nelle versioni precedenti può chiamarsi **Accounts** e il menu **Preferences…**.
-3. Premi **+** oppure **Add Apple Account…**, scegli Apple Account/Apple ID se richiesto e completa l’accesso.
-4. Inserisci la 2FA **nella finestra di Xcode**. Verifica poi che il tuo account e il relativo team compaiano nell’elenco.
+Install full Xcode, launch it, and finish its initial setup, including the iOS tools. Use a version compatible with your macOS and the iPhone’s iOS release. Command Line Tools alone are not sufficient.
 
-![Dove aggiungere un account in Xcode](images/xcode-apple-accounts.svg)
+1. In Xcode, press **⌘ ,** or choose **Xcode → Settings…** from the menu bar.
+2. Select **Apple Accounts** in the sidebar. Older releases call this **Accounts** and use **Preferences…** instead of Settings.
+3. Click **+** or **Add Apple Account…** and complete sign-in.
+4. Enter your verification code in Xcode. Confirm that the account and its team appear in the list.
 
-*Schema illustrativo: i nomi dei controlli possono cambiare tra versioni. Non mostra account reali.*
+![Where to sign in to Xcode](images/xcode-apple-accounts.svg)
 
-Puoi aggiungere più account. Non serve accedere all’iCloud principale del Mac con ciascuno di essi. Xcode IPA Installer riutilizza la sessione gestita da Xcode; non richiede di copiarne i token. Se Xcode segnala sessione scaduta o accordi da accettare, completa la procedura lì e premi **Aggiorna** nell’installer. [Guida Apple agli account Xcode](https://help.apple.com/xcode/mac/current/en.lproj/devaf282080a.html)
+*Illustrative diagram, not a screenshot of a real account. Controls may differ between Xcode versions.*
 
-## 2. Preparare l’iPhone
+You can add multiple accounts without changing the Mac’s main iCloud account. The installer reuses Xcode’s session; it does not copy tokens or ask for passwords. If Xcode reports an expired session or pending agreement, complete that step in Xcode and refresh the installer. [Apple’s account guide](https://help.apple.com/xcode/mac/current/en.lproj/devaf282080a.html)
 
-Collega l’iPhone al Mac via USB, sbloccalo e conferma **Autorizza questo computer** se richiesto. In Xcode puoi controllare l’associazione da **Window → Devices and Simulators**.
+## 2. Connect your iPhone
 
-Sull’iPhone apri **Impostazioni → Privacy e sicurezza → Modalità sviluppatore**, attivala e completa riavvio e conferma. Se la voce non compare, completa prima l’associazione con Xcode. Premi poi **Aggiorna** nell’installer. La prima configurazione via USB è preferibile; la connessione via rete richiede che Xcode abbia già associato e renda raggiungibile il dispositivo. [Modalità sviluppatore: guida Apple](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
+Connect over USB, unlock the iPhone, and accept **Trust This Computer** if prompted. In Xcode, open **Window → Devices and Simulators** to check pairing and device readiness.
 
-Anche **Solo firma** richiede un iPhone selezionato: il provisioning di sviluppo viene verificato per quel dispositivo.
+On iOS 16 or later, enable **Settings → Privacy & Security → Developer Mode**, then complete the restart and confirmation. If the option is missing, pair with Xcode first. Refresh the installer. Wi-Fi connections require prior pairing and support from Xcode. [Apple’s Developer Mode guide](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
 
-## 3. Configurare il team
+**Sign only** also requires a selected iPhone because the development profile is checked against that device.
 
-Apri l’app scaricata dalla [pagina Releases](https://github.com/dre4moff/Xcode-IPA-Installer/releases/latest). Seleziona l’account Xcode e il suo team. Quando Xcode non espone il team nella cache locale, usa **Configura il Team ID…** oppure **Opzioni → Configura team…**.
+### macOS 12 and older Xcode versions
 
-Inserisci un nome riconoscibile e il **Team ID di 10 lettere/numeri**. Se è il team gratuito personale, lascia attiva la voce **Personal Team gratuito**. Questa configurazione associa solo metadati locali; non effettua un nuovo login e non crea un team.
+The app runs on macOS 12+. Liquid Glass requires macOS 26; earlier versions use native material and standard buttons.
 
-Per recuperare il Team ID:
-
-- Per un abbonamento Apple Developer Program, consulta i dettagli dell’iscrizione del team su [Apple Developer Account](https://developer.apple.com/account).
-- Per un Personal Team, in Xcode crea un piccolo progetto **iOS → App**, apri il target → **Signing & Capabilities**, abilita **Automatically manage signing** e scegli il tuo Personal Team. In **Build Settings** cerca **Development Team** / `DEVELOPMENT_TEAM`; se vedi solo il nome, apri il file `project.pbxproj` del progetto con un editor e cerca la voce `DEVELOPMENT_TEAM = ...;`. Non occorre compilare o installare questo progetto.
-
-In alternativa, per un progetto già configurato:
+Device discovery uses `devicectl` when Xcode provides it. With older Xcode versions, the app uses `xcdevice`; installing to **iOS 16 and earlier** additionally requires the separate [ios-deploy](https://github.com/ios-control/ios-deploy) utility:
 
 ```sh
-xcrun xcodebuild -project "/percorso/Prova.xcodeproj" \
-  -scheme "Prova" -showBuildSettings |
+brew install ios-deploy
+```
+
+Use a USB cable. The installer checks for this utility before provisioning an installation request. It does not download or install it automatically. You can still export an IPA with **Sign only**. Devices on iOS 17+ require Xcode 15+ and a compatible macOS release. A fallback cannot supply device support that an older Xcode does not have. Consult [Apple’s Xcode system requirements](https://developer.apple.com/xcode/system-requirements).
+
+## 3. Set up the signing team
+
+Open the app from [Releases](https://github.com/dre4moff/Xcode-IPA-Installer/releases/latest). Choose your Xcode account and signing team. If Xcode has not cached team metadata, use **Set up team…**, also available under **Options**.
+
+Enter a recognizable account name and the **10-character Team ID**. Keep **Personal Team (free account)** enabled for a free team. This only associates local metadata; it does not sign in or create a team.
+
+To find the Team ID:
+
+- For an Apple Developer Program membership, open the team’s membership details in [Apple Developer Account](https://developer.apple.com/account).
+- For a Personal Team, create a small **iOS → App** project in Xcode. Select its target → **Signing & Capabilities**, enable **Automatically manage signing**, and select your team. In **Build Settings**, find **Development Team** / `DEVELOPMENT_TEAM`. If only the name is shown, inspect `project.pbxproj` with a text editor and look for `DEVELOPMENT_TEAM = ...;`. You do not need to build or install this project.
+
+For an existing configured project, you can also run:
+
+```sh
+xcrun xcodebuild -project "/path/to/Example.xcodeproj" \
+  -scheme "Example" -showBuildSettings |
   awk '/ DEVELOPMENT_TEAM = / { print $3; exit }'
 ```
 
-Sostituisci percorso e schema. Non usare come Team ID il codice tra parentesi nel nome del certificato: può essere un identificativo diverso.
+Replace the path and scheme. The code in parentheses in a certificate’s display name is not necessarily the Team ID.
 
-Se lo stesso team è associato a più account autenticati in Xcode, l’installer segnala l’ambiguità prima di firmare. Scegli un Personal Team distinto o risolvi l’associazione in Xcode; la selezione tramite Team ID non identifica un singolo membro di un team condiviso.
+If the same team appears under multiple authenticated accounts, the installer reports the ambiguity. Choose a distinct Personal Team or resolve the account association in Xcode; `DEVELOPMENT_TEAM` does not choose a specific member of a shared team.
 
-## 4. Firmare un’IPA
+## 4. Sign or install
 
-1. Premi **Scegli IPA…** o trascina il file nella finestra.
-2. Controlla **account, team e iPhone**.
-3. Lascia **Increased Memory Limit** attivo se l’app lo richiede. Si applica solo al principale; tutti gli altri componenti vengono comunque firmati.
-4. Usa **Solo firma** per esportare oppure **Firma e installa** per esportare e installare sull’iPhone selezionato.
+1. Choose or drop the IPA.
+2. Check account, team, and iPhone.
+3. Enable **Increased Memory Limit** when required. It applies to the main executable only; every component is still signed.
+4. Choose **Sign only** to export, or **Sign & install** to export and install.
 
-L’originale non viene modificato. In Download trovi l’IPA firmata e il rapporto `.verification.json`. Dal rapporto puoi controllare team, scadenza, componenti firmati e stato della capability memoria. Se l’installazione fallisce dopo l’esportazione, questi file possono essere già disponibili.
+In small windows, scroll to reach all options. Signing actions stay pinned at the bottom. **Options** shows the final signing identifier. **Activity** contains operation details and an **Open log** button. Errors and reports remain selectable.
 
-Xcode può richiedere l’accesso alla chiave di firma nel Portachiavi. Gestisci personalmente eventuali richieste di macOS. Se iOS richiede di autorizzare lo sviluppatore, controlla **Impostazioni → Generali → VPN e gestione dispositivo** sull’iPhone.
+The main identifier is `<original Bundle ID>.<selected Team ID>`. A matching suffix is not added twice; extensions follow the main identifier. Every process profile and signature must match the team. Updates require the same complete identifier and compatible signing. An app previously installed with another ID remains a separate app.
 
-Il principale usa **l’ID originale più il Team ID dell’account selezionato**, per esempio `com.example.App.ABCDEFGHIJ`. Se il suffisso corretto è già presente, non viene duplicato. In **Opzioni** puoi leggere l’identificativo finale; cambiando team cambia anche il suffisso. Non vengono aggiunti prefissi o identificativi del Mac.
+The source file is unchanged. **Downloads** receives the signed IPA and a `.verification.json` report listing component signatures, memory policy, team, and expiry. These may already exist if installation fails afterward.
 
-Gli identificativi delle estensioni e delle app incorporate vengono aggiornati sotto quello del principale, conservando le relazioni: ad esempio `com.example.App.ABCDEFGHIJ.Widget`. Il backend verifica che ogni profilo e firma appartengano al team selezionato e non accetta un ID finale diverso da quello previsto. Il rapporto registra gli ID originali e quelli di firma.
+Handle any macOS Keychain request personally. If iOS asks to trust the developer, check **Settings → General → VPN & Device Management**.
 
-Per aggiornare un’app esistente servono lo stesso Bundle ID completo e una firma compatibile. Se la copia sull’iPhone usa già `<ID originale>.<Team ID>`, lo schema della versione 1.0.5 coincide. Un ID diverso, inclusi i prefissi delle vecchie versioni dell’installer, resta un’altra app: non vengono migrati i dati tra identificativi diversi.
+## 5. Memory capabilities
 
-## 5. Increased Memory Limit ed EVA
-
-Le due capability sono indipendenti:
-
-| Opzione | Comportamento |
+| Setting | Behavior |
 | --- | --- |
-| Increased Memory Limit attivo | Richiede `com.apple.developer.kernel.increased-memory-limit` nel profilo e nella firma del principale. Se manca, interrompe la procedura. |
-| Increased Memory Limit disattivo | Esclude quell’entitlement anche se presente nell’IPA originale. |
-| EVA presente nell’IPA, team compatibile | Conserva `com.apple.developer.kernel.extended-virtual-addressing` sul principale. |
-| EVA non disponibile per il team | La esclude automaticamente. I Personal Team vengono riconosciuti prima del provisioning; un rifiuto esplicito di Xcode su un altro team causa un unico nuovo tentativo senza EVA. |
-| Processi ausiliari | App incorporate, estensioni e JIT helper vengono firmati senza capability memoria. Framework e librerie vengono firmati come componenti del processo che li carica. |
+| Increased Memory Limit on | Requires `com.apple.developer.kernel.increased-memory-limit` in the main profile and final signature. Missing authorization stops signing. |
+| Increased Memory Limit off | Excludes that entitlement from the main signature. |
+| Original EVA, supported team | Keeps `com.apple.developer.kernel.extended-virtual-addressing` on the main app. |
+| EVA unavailable | Excludes it for Personal Teams; an explicit refusal on another team causes one retry without EVA. Increased Memory Limit remains requested. |
+| Auxiliary components | Embedded apps, extensions, and JIT helpers are signed without memory capabilities. Frameworks/libraries run within the host process. |
 
-La gestione è generale per tutte le IPA. EVA non viene aggiunta a un’app che non la richiede. L’esclusione di EVA non disattiva Increased Memory Limit. Le altre capability originali restano richieste, salvo che tu disattivi esplicitamente **Mantieni le capability originali dell’IPA**. Nessuna di queste opzioni aggiunge RAM fisica.
+The policy applies to all IPAs. EVA is not added when the original app does not request it. Other capabilities remain requested unless you disable **Keep original capabilities**. This may affect App Groups, iCloud, or push. These options do not add physical RAM.
 
-## Problemi comuni
+## 6. Language and appearance
 
-| Messaggio o sintomo | Cosa controllare |
+macOS chooses English or Italian using its standard language preferences. Unsupported languages fall back to English; there is no in-app selector. Light/dark appearance and Reduce Transparency follow system settings. Xcode and iOS diagnostics may use their own language.
+
+## Troubleshooting
+
+| Symptom | Check |
 | --- | --- |
-| Nessun account / sessione scaduta | Completa l’accesso in Xcode → Settings → Apple Accounts e aggiorna l’elenco. |
-| Team assente | Associa il Team ID corretto da **Configura team…**; controlla se è un Personal Team. |
-| iPhone assente o non raggiungibile | Cavo, autorizzazione, sblocco, supporto iOS di Xcode e Window → Devices and Simulators. |
-| Bundle Identifier non disponibile | Apple non autorizza l’ID con il suffisso del team. L’installer interrompe la procedura senza generare identificativi alternativi. |
-| Limite di app con profili gratuiti raggiunto | Il messaggio mostra gli identificativi che occupano gli slot. Un aggiornamento deve avere lo stesso ID della copia esistente e una firma compatibile; un ID diverso occupa un nuovo slot. |
-| Extended Virtual Addressing non supportata | La versione 1.0.3 la esclude automaticamente per il team che non la autorizza, preservando la richiesta Increased Memory Limit. |
-| Increased Memory Limit non autorizzato | La procedura si ferma. Verifica team e profilo: l’app non dichiara riuscita la firma senza la capability richiesta. |
-| App Groups, iCloud o push non autorizzati | Il nuovo team deve possedere le autorizzazioni. Disattivare le capability originali può compromettere le funzioni che le usano. |
-| IPA cifrata / componenti Watch | Questi pacchetti non sono supportati. |
-| App installata ma funzione assente | La firma non garantisce codice, backend remoto, Live Activities, Dynamic Island o servizi del team originale. Controlla il rapporto e i log. |
+| Missing account / expired session | Sign in under Xcode → Settings → Apple Accounts, then refresh. |
+| Missing team | Associate the correct Team ID and Personal Team status under Set up team. |
+| Missing iPhone | USB, trust, unlock state, Xcode’s device support, Devices and Simulators. |
+| Missing ios-deploy | On older Xcode, install the utility for iOS 16 or earlier, or use Sign only. |
+| Unsupported modern iPhone on old macOS | Use a compatible Xcode/macOS combination; the legacy path cannot install on iOS 17+. |
+| Bundle Identifier unavailable | Apple has not authorized that team-suffixed ID. The app stops without generating alternate IDs. |
+| Free-profile app limit | The full error lists occupied identifiers. Updating requires the existing app’s complete ID and compatible signing. A different ID uses another slot. |
+| Increased Memory Limit not authorized | Signing stops instead of silently dropping the requested entitlement. Check the selected team/profile. |
+| App Groups, iCloud, or push denied | The new team needs those permissions. Disabling original capabilities may break dependent features. |
+| Encrypted IPA / Watch component | These packages are unsupported. |
+| App installs but a feature fails | Signing cannot guarantee app code, remote services, Live Activities, Dynamic Island, or JIT. Inspect logs and the report. |
 
-I limiti, le scadenze e le capability disponibili dipendono dal provisioning Apple e dal tipo di team. L’installer non li aggira. Conserva l’IPA sorgente e i dati locali dell’installer; prima di pubblicare log o rapporti rimuovi i tuoi identificativi personali.
+Apple’s provisioning limits and expiry rules apply. Keep the source IPA and local account metadata. Remove personal identifiers from logs and verification reports before sharing them.

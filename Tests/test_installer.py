@@ -1,4 +1,5 @@
 import copy
+import ast
 import datetime as dt
 import hashlib
 import importlib.util
@@ -32,6 +33,46 @@ def profile(bundle_id="local.fixture.app", memory=True):
 
 
 class CoreTests(unittest.TestCase):
+    def test_backend_localization_is_complete_and_defaults_to_english(self):
+        english=m.load_translations("en")
+        italian=m.load_translations("it")
+        self.assertEqual(set(english),set(italian))
+        tree=ast.parse(Path(m.__file__).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=="tr":
+                if node.args and isinstance(node.args[0],ast.Constant):
+                    self.assertIn(node.args[0].value,english)
+                    self.assertTrue(italian[node.args[0].value])
+        with patch.object(m,"TRANSLATIONS",english):self.assertEqual(m.tr("Preparing the IPA"),"Preparing the IPA")
+        with patch.object(m,"TRANSLATIONS",italian):
+            self.assertEqual(m.tr("Preparing the IPA"),"Preparazione dell’IPA")
+            self.assertEqual(m.tr("untranslated system diagnostic"),"untranslated system diagnostic")
+
+    def test_legacy_discovery_filters_unavailable_and_non_ios_devices(self):
+        phone=dict(identifier=UDID,name="Fixture iPhone",platform="com.apple.platform.iphoneos",available=True,
+                   simulator=False,operatingSystemVersion="16.2 (build)",interface="usb")
+        values=m.devices_from_xcdevice([phone,dict(phone,simulator=True),dict(phone,available=False),
+                                       dict(phone,platform="com.apple.platform.macosx")])
+        self.assertEqual(len(values),1)
+        self.assertEqual(values[0]["udid"],UDID)
+        self.assertEqual(values[0]["version"],"16.2")
+        self.assertEqual(values[0]["backend"],"ios-deploy")
+        with patch.object(m,"run",return_value=json.dumps([phone]).encode()) as command:
+            self.assertEqual(m.discover_devices({"DEVELOPER_DIR":"/nonexistent/legacy/Xcode"}),values)
+            self.assertIn("xcdevice",command.call_args[0][0])
+
+    def test_legacy_installer_uses_selected_device_without_launch_or_uninstall(self):
+        device=dict(udid=UDID,version="16.2",backend="ios-deploy")
+        with patch.object(m,"legacy_installer",return_value="/fixture/ios-deploy"),patch.object(m,"run") as command:
+            m.install_app(Path("Fixture.app"),device,{},None)
+            args=command.call_args[0][0]
+            self.assertEqual(args[args.index("--id")+1],UDID)
+            self.assertNotIn("--debug",args)
+            self.assertNotIn("--uninstall",args)
+        with self.assertRaises(m.InstallerError):m.legacy_installer(dict(version="17.0"))
+        with patch.object(m.shutil,"which",return_value=None),patch.object(m.os.path,"isfile",return_value=False),self.assertRaises(m.InstallerError):
+            m.legacy_installer(device)
+
     def test_eva_policy_is_independent_from_increased_memory(self):
         original = {m.EVA: True, m.MEMORY: True, "com.apple.security.application-groups": ["group.fixture"]}
         for allow_eva in [False, True]:
@@ -82,7 +123,7 @@ class CoreTests(unittest.TestCase):
         process.communicate.return_value=(output,None)
         with patch.object(m.subprocess,"Popen",return_value=process),self.assertRaises(m.InstallerError) as caught:
             m.run(["offline-install-error"])
-        self.assertIn("limite di app",str(caught.exception))
+        self.assertIn("limit of apps",str(caught.exception))
         self.assertIn("com.example.ExistingApp",str(caught.exception))
 
     def test_widget_metadata_and_shared_keychain_relationship_are_preserved(self):
@@ -346,7 +387,7 @@ class OfflinePipelineTests(unittest.TestCase):
                 sign_paths=[c[-1] for c in commands if c[0]=="/usr/bin/codesign" and "--force" in c]
                 self.assertEqual(len(sign_paths),6)
                 for i,p in enumerate(sign_paths):
-                    self.assertFalse(any(Path(q).is_relative_to(Path(p)) for q in sign_paths[i+1:] if q!=p))
+                    self.assertFalse(any(Path(p) in Path(q).parents for q in sign_paths[i+1:] if q!=p))
                 for p in [signed/"Frameworks/Runtime.framework",signed/"PlugIns/Share.appex/Frameworks/Inner.framework",signed/"Assets/LooseLibrary"]:
                     real_run(["/usr/bin/codesign","--verify","--strict",p],quiet=True)
                 self.assertEqual(complete["team"],TEAM)

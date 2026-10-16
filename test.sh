@@ -5,6 +5,7 @@ project_dir="${0:A:h}"
 test_temp="$(mktemp -d -t xcode-ipa-tests)"
 trap 'rm -rf -- "$test_temp"' EXIT
 export PYTHONDONTWRITEBYTECODE=1
+export XCODE_IPA_LANGUAGE=en
 export XCODE_IPA_PROJECT="$project_dir" XCODE_IPA_TEMP="$test_temp"
 xcrun python3 - <<'PY'
 import importlib.util, os
@@ -27,7 +28,7 @@ for scheme in Provision0 Provision1; do
         build > "$test_temp/$scheme.log" 2>&1 || { cat "$test_temp/$scheme.log"; exit 1; }
 done
 export XCODE_IPA_FIXTURES="$test_temp/Products/Debug-iphoneos"
-xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
+xcrun --sdk iphoneos clang -target arm64-apple-ios15.0 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
     -dynamiclib -x c "$test_temp/Project/main.c" -o "$XCODE_IPA_FIXTURES/libFixture.dylib"
 xcrun python3 -m unittest discover -s "$project_dir/Tests" -v
 xcrun swiftc -parse-as-library -swift-version 5 -module-cache-path "$test_temp/SwiftModules" \
@@ -44,3 +45,15 @@ for v in values:
     assert m.team_bundle_id(v['original'],v['team'])==v['bundleID']
 print('Swift/Python team-suffix parity: 3 vectors passed, invalid-input guards passed')
 PY
+localization_app="$test_temp/LocalizationTests.app"
+mkdir -p "$localization_app/Contents/MacOS" "$localization_app/Contents/Resources"
+cp "$project_dir/Resources/Info.plist" "$localization_app/Contents/Info.plist"
+ditto --norsrc --noextattr "$project_dir/Resources/en.lproj" "$localization_app/Contents/Resources/en.lproj"
+ditto --norsrc --noextattr "$project_dir/Resources/it.lproj" "$localization_app/Contents/Resources/it.lproj"
+xcrun swiftc -parse-as-library -swift-version 5 -target arm64-apple-macosx12.0 \
+    -module-cache-path "$test_temp/SwiftModules" \
+    "$project_dir/Sources/Localization.swift" "$project_dir/Tests/LocalizationTests.swift" \
+    -o "$localization_app/Contents/MacOS/XcodeIPAInstaller"
+"$localization_app/Contents/MacOS/XcodeIPAInstaller" en -AppleLanguages '(en)'
+"$localization_app/Contents/MacOS/XcodeIPAInstaller" it -AppleLanguages '(it)'
+"$localization_app/Contents/MacOS/XcodeIPAInstaller" en -AppleLanguages '(ja)'

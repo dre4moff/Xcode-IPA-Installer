@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local IPA signing using the selected, existing Xcode account. Python 3.9+."""
+"""Local IPA signing using the selected, existing Xcode account. Python 3.8+."""
 import argparse
 import datetime as dt
 import fnmatch
@@ -30,6 +30,23 @@ SUPPORT = (_STANDARD_SUPPORT if os.access(_STANDARD_SUPPORT if _STANDARD_SUPPORT
 ACCOUNT_FILE = SUPPORT / "accounts.json"
 ACTIVE_PROCESS = None
 CANCELLED = False
+LANGUAGE = "it" if os.environ.get("XCODE_IPA_LANGUAGE", "en").split("-", 1)[0] == "it" else "en"
+
+
+def load_translations(language):
+    candidates = [Path(__file__).parent / (language + ".lproj/Backend.json"),
+                  Path(__file__).parent.parent / ("Resources/" + language + ".lproj/Backend.json")]
+    for path in candidates:
+        if path.is_file():
+            return json.loads(path.read_text())
+    return {}
+
+
+TRANSLATIONS = load_translations(LANGUAGE)
+
+
+def tr(message):
+    return TRANSLATIONS.get(message, message)
 
 
 class InstallerError(Exception):
@@ -48,7 +65,7 @@ def redact(text):
 def run(args, env=None, log=None, timeout=180, quiet=False):
     global ACTIVE_PROCESS
     if CANCELLED:
-        raise InstallerError("Operazione annullata.")
+        raise InstallerError(tr('Operation cancelled.'))
     process = subprocess.Popen([str(x) for x in args], stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, env=env, start_new_session=True)
     ACTIVE_PROCESS = process
@@ -62,22 +79,22 @@ def run(args, env=None, log=None, timeout=180, quiet=False):
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.communicate()
-            raise InstallerError("Tempo esaurito: " + Path(str(args[0])).name)
+            raise InstallerError(tr('Timed out: ') + Path(str(args[0])).name)
         text = output.decode("utf-8", errors="replace")
         if log:
             with log.open("a") as f:
                 f.write("\n$ " + " ".join(str(x) for x in args) + "\n" + redact(text))
         if CANCELLED:
-            raise InstallerError("Operazione annullata.")
+            raise InstallerError(tr('Operation cancelled.'))
         if process.returncode:
             lines = [x.strip() for x in text.splitlines() if "error:" in x.lower() or "Error Domain=" in x]
             if "This device has reached the maximum number of installed apps using a free developer profile" in text or "maximum number of apps for free development profiles" in text:
-                detail = "L’iPhone ha raggiunto il limite di app installate con profili gratuiti. Un aggiornamento richiede lo stesso Bundle ID della copia esistente.\n\n" + text[-9000:]
+                detail = tr('This iPhone has reached the limit of apps installed with free profiles. An update must use the same Bundle ID as the existing app.\n\n') + text[-9000:]
             else:
                 detail = "\n".join(lines[-8:]) if lines else text[-2200:]
             if "Failed Registering Bundle Identifier" in text:
-                detail += "\n\nApple non accetta l’identificativo con il suffisso del team selezionato."
-            raise InstallerError(redact(detail.strip()) or "Comando non riuscito: " + str(args[0]))
+                detail += tr('\n\nApple did not accept the identifier with the selected team suffix.')
+            raise InstallerError(redact(detail.strip()) or tr('Command failed: ') + str(args[0]))
         if not quiet and log:
             for line in text.splitlines():
                 if any(s in line for s in ["Registering", "Creating provisioning", "Signing", "Provisioning Profile:"]):
@@ -103,7 +120,7 @@ def xcode_environment():
     if not (path / "usr/bin/xcodebuild").exists():
         path = Path("/Applications/Xcode.app/Contents/Developer")
     if not (path / "usr/bin/xcodebuild").exists():
-        raise InstallerError("Installa Xcode completo e aprilo almeno una volta.")
+        raise InstallerError(tr('Install the full Xcode app and open it at least once.'))
     env = os.environ.copy()
     env["DEVELOPER_DIR"] = str(path)
     return env
@@ -135,7 +152,7 @@ def discover_accounts(preferences=None, labels=None):
             teams = cached.get(identifier, []) or known.get("teams", [])
             name = known.get("name") or entry.get("username") or entry.get("name")
             if not name:
-                name = teams[0].get("teamName") if teams else "Account Xcode " + identifier[:8]
+                name = teams[0].get("teamName") if teams else tr('Xcode account ') + identifier[:8]
             clean = []
             for team in teams:
                 tid = str(team.get("teamID", ""))
@@ -149,14 +166,14 @@ def discover_accounts(preferences=None, labels=None):
 def selected_account_team(accounts, account_id, team):
     account = next((a for a in accounts if a["id"] == account_id), None)
     if account is None:
-        raise InstallerError("L’account selezionato non è più disponibile in Xcode.")
+        raise InstallerError(tr('The selected account is no longer available in Xcode.'))
     if team not in [t["id"] for t in account["teams"]]:
-        raise InstallerError("Seleziona un team associato a questo account.")
+        raise InstallerError(tr('Choose a team associated with this account.'))
     # Xcode's documented signing selector is DEVELOPMENT_TEAM. A shared team does not
     # distinguish two member accounts: fail closed rather than promise the chosen login.
     owners = {a["id"] for a in accounts if any(t["id"] == team for t in a["teams"])}
     if owners != {account_id}:
-        raise InstallerError("Questo team è associato a più account Xcode. La selezione del singolo account non è univoca: usa il Personal Team dell’account desiderato.")
+        raise InstallerError(tr('This team belongs to multiple Xcode accounts. The individual account cannot be selected unambiguously. Use the Personal Team of the account you want.'))
     return account
 
 
@@ -180,20 +197,51 @@ def devices_from_json(document):
 
 
 def discover_devices(env):
+    if not (Path(env["DEVELOPER_DIR"]) / "usr/bin/devicectl").is_file():
+        output = run(["/usr/bin/xcrun", "xcdevice", "list", "--timeout", "5"], env=env, quiet=True)
+        return devices_from_xcdevice(json.loads(output))
     with tempfile.TemporaryDirectory(prefix="xcode-ipa-discovery-") as folder:
         path = Path(folder) / "devices.json"
         run(["/usr/bin/xcrun", "devicectl", "list", "devices", "--json-output", path], env=env, quiet=True)
         return devices_from_json(json.loads(path.read_text()))
 
 
+def devices_from_xcdevice(document):
+    return [dict(id=d["identifier"], udid=d["identifier"], name=d.get("name", d["identifier"]),
+                 version=d.get("operatingSystemVersion", "").split(" ", 1)[0],
+                 connection=d.get("interface", ""), backend="ios-deploy")
+            for d in document if d.get("platform") == "com.apple.platform.iphoneos"
+            and not d.get("simulator", False) and d.get("available", False) and d.get("identifier")]
+
+
+def legacy_installer(device):
+    if int((device.get("version") or "0").split(".", 1)[0]) >= 17:
+        raise InstallerError(tr("This iPhone requires Xcode 15 or later and a compatible macOS version. The legacy installer supports iOS 16 and earlier."))
+    candidates = [shutil.which("ios-deploy"), "/opt/homebrew/bin/ios-deploy", "/usr/local/bin/ios-deploy"]
+    tool = next((p for p in candidates if p and os.path.isfile(p) and os.access(p, os.X_OK)), None)
+    if not tool:
+        raise InstallerError(tr("This Xcode version needs ios-deploy to install apps. Install it with Homebrew (brew install ios-deploy), or choose Sign only to export the IPA. Use a USB cable with iOS 16 or earlier."))
+    return tool
+
+
+def install_app(root, device, env, log):
+    if device.get("backend") == "ios-deploy":
+        # No --debug/--uninstall: update the bundle without launching or erasing it.
+        run([legacy_installer(device), "--id", device["udid"], "--bundle", root, "--timeout", "60"],
+            env=env, log=log, timeout=600)
+    else:
+        run(["/usr/bin/xcrun", "devicectl", "device", "install", "app", "--device", device["id"], root],
+            env=env, log=log, timeout=600)
+
+
 def save_account(config):
     accounts = discover_accounts()
     account = next((x for x in accounts if x["id"] == config["account"]), None)
     if not account:
-        raise InstallerError("Questo account non è più presente in Xcode.")
+        raise InstallerError(tr('This account is no longer in Xcode.'))
     tid = config["team"].strip().upper()
     if not re.fullmatch(r"[A-Z0-9]{10}", tid):
-        raise InstallerError("Il Team ID deve contenere 10 lettere o numeri.")
+        raise InstallerError(tr('The Team ID must contain 10 letters or numbers.'))
     labels = load_account_labels()
     labels[account["id"]] = dict(name=config.get("name", account["name"]), teams=[
         dict(teamID=tid, teamName=config.get("teamName", "Team " + tid),
@@ -209,15 +257,15 @@ def checked_members(archive):
         name = item.filename
         pure = PurePosixPath(name)
         if pure.is_absolute() or ".." in pure.parts or "\\" in name or "\x00" in name:
-            raise InstallerError("Percorso non sicuro nell’IPA.")
+            raise InstallerError(tr('Unsafe path in the IPA.'))
         if name in names:
-            raise InstallerError("L’IPA contiene nomi duplicati: " + name)
+            raise InstallerError(tr('The IPA contains duplicate names: ') + name)
         names.add(name)
         mode = item.external_attr >> 16
         if stat.S_ISLNK(mode):
             target = archive.read(item).decode("utf-8")
             if target.startswith("/") or ".." in PurePosixPath(target).parts:
-                raise InstallerError("L’IPA contiene un collegamento fuori dal pacchetto.")
+                raise InstallerError(tr('The IPA contains a link outside the bundle.'))
         total += item.file_size
     return total
 
@@ -225,13 +273,13 @@ def checked_members(archive):
 def inspect_ipa(path):
     path = Path(path).expanduser().resolve()
     if not path.is_file():
-        raise InstallerError("Seleziona un file IPA esistente.")
+        raise InstallerError(tr('Choose an existing IPA file.'))
     with zipfile.ZipFile(path) as archive:
         size = checked_members(archive)
         mains = [x for x in archive.namelist() if len(PurePosixPath(x).parts) == 3
                  and x.startswith("Payload/") and x.endswith(".app/Info.plist")]
         if len(mains) != 1:
-            raise InstallerError("L’IPA deve contenere una sola app in Payload.")
+            raise InstallerError(tr('The IPA must contain exactly one app in Payload.'))
         info = plistlib.loads(archive.read(mains[0]))
         root = str(PurePosixPath(mains[0]).parent)
         return dict(path=str(path), name=info.get("CFBundleDisplayName") or info.get("CFBundleName") or Path(root).stem,
@@ -244,7 +292,7 @@ def unpack_ipa(path, folder):
     with zipfile.ZipFile(path) as archive:
         size = checked_members(archive)
         if shutil.disk_usage(folder).free < size * 2 + 512 * 1024 ** 2:
-            raise InstallerError("Spazio insufficiente per estrarre e firmare questa IPA.")
+            raise InstallerError(tr('Not enough free space to extract and sign this IPA.'))
         for item in archive.infolist():
             if not item.filename.startswith("Payload/"):
                 continue
@@ -274,12 +322,14 @@ def is_macho(path):
 def bundle_executable(bundle, info):
     name = info.get("CFBundleExecutable", "")
     if not isinstance(name, str) or not name or name in (".", "..") or "/" in name or "\\" in name:
-        raise InstallerError("Nome dell’eseguibile non valido: " + bundle.name)
+        raise InstallerError(tr('Invalid executable name: ') + bundle.name)
     binary = bundle / name
-    if not binary.resolve().is_relative_to(bundle.resolve()):
-        raise InstallerError("L’eseguibile è fuori dal pacchetto dell’app.")
+    try:
+        binary.resolve().relative_to(bundle.resolve())
+    except ValueError:
+        raise InstallerError(tr('The executable is outside the app bundle.'))
     if not is_macho(binary):
-        raise InstallerError("Eseguibile iOS mancante: " + bundle.name)
+        raise InstallerError(tr('Missing iOS executable: ') + bundle.name)
     return binary
 
 
@@ -294,26 +344,26 @@ def macho_slices(path):
         offsets = [(0, length)]
         if initial[:4] in fat:
             endian, entry_size, fmt = fat[initial[:4]]
-            if len(initial) != 8: raise InstallerError("Header Mach-O troncato.")
+            if len(initial) != 8: raise InstallerError(tr('Truncated Mach-O header.'))
             count = struct.unpack(endian + "I", initial[4:])[0]
-            if not 0 < count <= 64: raise InstallerError("Numero architetture Mach-O non valido.")
+            if not 0 < count <= 64: raise InstallerError(tr('Invalid Mach-O architecture count.'))
             offsets = []
             for _ in range(count):
                 entry = stream.read(entry_size)
-                if len(entry) != entry_size: raise InstallerError("Header Mach-O troncato.")
+                if len(entry) != entry_size: raise InstallerError(tr('Truncated Mach-O header.'))
                 offset, size = struct.unpack_from(endian + fmt, entry, 8)
                 if offset < 8 + count * entry_size or offset + size > length:
-                    raise InstallerError("Architettura Mach-O fuori dal file.")
+                    raise InstallerError(tr('Mach-O architecture extends beyond the file.'))
                 offsets.append((offset, size))
         result = []
         for offset, size in offsets:
             stream.seek(offset); header = stream.read(min(size, 32))
-            if header[:4] not in thin: raise InstallerError("Architettura Mach-O non valida.")
+            if header[:4] not in thin: raise InstallerError(tr('Invalid Mach-O architecture.'))
             endian, header_size = thin[header[:4]]
-            if len(header) < header_size: raise InstallerError("Header Mach-O troncato.")
+            if len(header) < header_size: raise InstallerError(tr('Truncated Mach-O header.'))
             filetype, commands, command_bytes = struct.unpack_from(endian + "III", header, 12)
             if commands > command_bytes // 8 or command_bytes > min(size-header_size, 16*1024*1024):
-                raise InstallerError("Load command Mach-O non validi.")
+                raise InstallerError(tr('Invalid Mach-O load commands.'))
             result.append(dict(offset=offset, endian=endian, headerSize=header_size,
                                filetype=filetype, commands=commands, commandBytes=command_bytes))
         return result
@@ -325,13 +375,13 @@ def check_encryption(path):
             stream.seek(entry["offset"] + entry["headerSize"]); data = stream.read(entry["commandBytes"])
         pos = 0
         for _ in range(entry["commands"]):
-            if pos + 8 > len(data): raise InstallerError("Load command Mach-O troncati.")
+            if pos + 8 > len(data): raise InstallerError(tr('Truncated Mach-O load commands.'))
             cmd, size = struct.unpack_from(entry["endian"] + "II", data, pos)
-            if size < 8 or pos + size > len(data): raise InstallerError("Header Mach-O non valido.")
+            if size < 8 or pos + size > len(data): raise InstallerError(tr('Invalid Mach-O header.'))
             if cmd in (0x21, 0x2c):
-                if size < 20: raise InstallerError("Comando cifratura Mach-O non valido.")
+                if size < 20: raise InstallerError(tr('Invalid Mach-O encryption command.'))
                 if struct.unpack_from(entry["endian"] + "I", data, pos + 16)[0] != 0:
-                    raise InstallerError("Questa IPA contiene codice App Store cifrato e non può essere rifirmata: " + path.name)
+                    raise InstallerError(tr('This IPA contains encrypted App Store code and cannot be signed again: ') + path.name)
             pos += size
 
 
@@ -350,7 +400,7 @@ def signing_plan(root, units):
         if not name: continue  # Resource-only bundles are sealed by their enclosing signature.
         binary = bundle_executable(bundle, info)
         if 2 in {s["filetype"] for s in macho_slices(binary)}:
-            raise InstallerError("Questo componente richiede un proprio bundle app e profilo: " + str(bundle.relative_to(root)))
+            raise InstallerError(tr('This component requires its own app bundle and profile: ') + str(bundle.relative_to(root)))
         plan[bundle] = None; covered.add(binary.resolve())
     for binary in root.rglob("*"):
         if binary.is_symlink() or not binary.is_file() or not is_macho(binary): continue
@@ -359,7 +409,7 @@ def signing_plan(root, units):
         check_encryption(binary)
         if binary.resolve() in covered: continue
         if 2 in kinds:
-            raise InstallerError("Eseguibile senza un bundle e profilo dedicati: " + str(binary.relative_to(root)))
+            raise InstallerError(tr('Executable without a dedicated bundle and profile: ') + str(binary.relative_to(root)))
         plan[binary] = None; covered.add(binary.resolve())
     return sorted(plan.items(), key=lambda item: (-len(item[0].parts), str(item[0])))
 
@@ -371,7 +421,7 @@ def entitlements_of(path):
     try:
         return plistlib.loads(result.stdout)
     except plistlib.InvalidFileException:
-        raise InstallerError("Impossibile leggere gli entitlement originali: " + path.name)
+        raise InstallerError(tr('Unable to read the original entitlements: ') + path.name)
 
 
 def valid_bundle_id(value):
@@ -381,18 +431,18 @@ def valid_bundle_id(value):
 def original_bundle_ids(bundles):
     """Validate every process identifier and preserve its exact original spelling."""
     if any(not valid_bundle_id(value) for value in bundles):
-        raise InstallerError("L’IPA contiene un identificativo app/estensione non valido. Gli identificativi originali non vengono modificati.")
+        raise InstallerError(tr('The IPA contains an invalid app or extension identifier.'))
     if len({value.lower() for value in bundles}) != len(bundles):
-        raise InstallerError("L’IPA contiene identificativi app/estensione duplicati.")
+        raise InstallerError(tr('The IPA contains duplicate app or extension identifiers.'))
     return {value: value for value in bundles}
 
 
 def team_bundle_id(original, team):
     if not valid_bundle_id(original) or not re.fullmatch(r"[A-Z0-9]{10}", team):
-        raise InstallerError("Identificativo originale o Team ID non valido.")
+        raise InstallerError(tr('Invalid original identifier or Team ID.'))
     result = original if original.endswith("." + team) else original + "." + team
     if not valid_bundle_id(result):
-        raise InstallerError("L’identificativo con il suffisso del team supera 255 caratteri.")
+        raise InstallerError(tr('The identifier with the team suffix exceeds 255 characters.'))
     return result
 
 
@@ -403,7 +453,7 @@ def team_bundle_mapping(bundles, root_id, team):
     for old in bundles:
         target = root + old[len(root_id):] if old == root_id or old.startswith(root_id + ".") else root + "." + old
         if not valid_bundle_id(target) or target.lower() in {value.lower() for value in result.values()}:
-            raise InstallerError("Gli identificativi dei componenti con il team selezionato non sono validi o univoci.")
+            raise InstallerError(tr('Component identifiers for the selected team are invalid or not unique.'))
         result[old] = target
     return result
 
@@ -460,7 +510,7 @@ def eva_unavailable(error):
 
 def assert_eva_policy(actual, requested):
     if actual.get(EVA) != requested.get(EVA):
-        raise InstallerError("La firma finale non rispecchia la disponibilità di Extended Virtual Addressing per il team selezionato.")
+        raise InstallerError(tr('The final signature does not match Extended Virtual Addressing availability for the selected team.'))
 
 
 def write_project(folder, units, team):
@@ -477,7 +527,7 @@ def write_project(folder, units, team):
     def configs(name, settings):
         config = add(name + "config", dict(isa="XCBuildConfiguration", name="Debug", buildSettings=settings))
         return add(name + "configs", dict(isa="XCConfigurationList", buildConfigurations=[config], defaultConfigurationName="Debug", defaultConfigurationIsVisible=0))
-    project_settings = dict(SDKROOT="iphoneos", SUPPORTED_PLATFORMS="iphoneos", IPHONEOS_DEPLOYMENT_TARGET="16.0", ARCHS="arm64", ENABLE_BITCODE="NO")
+    project_settings = dict(SDKROOT="iphoneos", SUPPORTED_PLATFORMS="iphoneos", IPHONEOS_DEPLOYMENT_TARGET="15.0", ARCHS="arm64", ENABLE_BITCODE="NO")
     targets, attrs = [], {}
     for i, unit in enumerate(units):
         name = "Provision" + str(i)
@@ -509,12 +559,12 @@ def write_project(folder, units, team):
         unit["target"] = name
         unit["product"] = name + product_suffix
     root = add("project", dict(isa="PBXProject", attributes=dict(TargetAttributes=attrs), buildConfigurationList=configs("project", project_settings),
-                   compatibilityVersion="Xcode 14.0", developmentRegion="en", knownRegions=["en"], mainGroup=main_group,
+                   compatibilityVersion="Xcode 12.0", developmentRegion="en", knownRegions=["en"], mainGroup=main_group,
                    productRefGroup=products, projectDirPath="", projectRoot="", targets=targets))
     project = folder / "Provision.xcodeproj"; project.mkdir()
     schemes = project / "xcshareddata/xcschemes"; schemes.mkdir(parents=True)
     for i, unit in enumerate(units):
-        scheme = ET.Element("Scheme", LastUpgradeVersion="2700", version="1.3")
+        scheme = ET.Element("Scheme", LastUpgradeVersion="1300", version="1.3")
         action = ET.SubElement(scheme, "BuildAction", parallelizeBuildables="NO", buildImplicitDependencies="YES")
         entries = ET.SubElement(action, "BuildActionEntries")
         entry = ET.SubElement(entries, "BuildActionEntry", buildForTesting="NO", buildForRunning="YES",
@@ -528,7 +578,7 @@ def write_project(folder, units, team):
         if isinstance(value, list):
             return [project_strings(v) for v in value]
         return str(value) if isinstance(value, int) else value
-    (project / "project.pbxproj").write_bytes(plistlib.dumps(project_strings(dict(archiveVersion=1, classes={}, objectVersion=56, objects=objects, rootObject=root))))
+    (project / "project.pbxproj").write_bytes(plistlib.dumps(project_strings(dict(archiveVersion=1, classes={}, objectVersion=54, objects=objects, rootObject=root))))
     return project
 
 
@@ -538,34 +588,34 @@ def decode_profile(path):
 
 def assert_profile(profile, team, bundle_id, udid, memory):
     if team not in profile.get("TeamIdentifier", []):
-        raise InstallerError("Il profilo appartiene a un team diverso da quello selezionato.")
+        raise InstallerError(tr('The profile belongs to a different team from the one selected.'))
     ent = profile.get("Entitlements", {})
     if ent.get("com.apple.developer.team-identifier") != team:
-        raise InstallerError("Team del profilo ed entitlement non coincidono.")
+        raise InstallerError(tr('The profile and entitlement teams do not match.'))
     prefix = profile.get("ApplicationIdentifierPrefix", [team])[0]
     if not fnmatch.fnmatchcase(prefix + "." + bundle_id, ent.get("application-identifier", "")):
-        raise InstallerError("Il profilo non autorizza l’identificativo di questa app.")
+        raise InstallerError(tr('The profile does not authorize this app identifier.'))
     if not profile.get("ProvisionsAllDevices") and udid not in profile.get("ProvisionedDevices", []):
-        raise InstallerError("Il profilo non include l’iPhone selezionato.")
+        raise InstallerError(tr('The profile does not include the selected iPhone.'))
     expiry = profile.get("ExpirationDate")
     if not isinstance(expiry, dt.datetime) or expiry.replace(tzinfo=dt.timezone.utc) <= dt.datetime.now(dt.timezone.utc):
-        raise InstallerError("Il profilo di provisioning è scaduto.")
+        raise InstallerError(tr('The provisioning profile has expired.'))
     if memory and ent.get(MEMORY) is not True:
-        raise InstallerError("Xcode non ha autorizzato Increased Memory Limit per il team selezionato. Installazione interrotta.")
+        raise InstallerError(tr('Xcode did not authorize Increased Memory Limit for the selected team. Installation stopped.'))
 
 
 def assert_signature(actual, team, app_identifier, memory):
     if actual.get("com.apple.developer.team-identifier") != team:
-        raise InstallerError("La firma finale non corrisponde al team selezionato.")
+        raise InstallerError(tr('The final signature does not match the selected team.'))
     if actual.get("application-identifier") != app_identifier:
-        raise InstallerError("L’identificativo nella firma non coincide con quello autorizzato dal profilo.")
+        raise InstallerError(tr('The signed identifier does not match the identifier authorized by the profile.'))
     if (actual.get(MEMORY) is True) != memory:
-        raise InstallerError("La firma finale non rispecchia l’opzione Increased Memory Limit.")
+        raise InstallerError(tr('The final signature does not match the Increased Memory Limit option.'))
 
 
 def assert_memory_scope(actual, main_process):
     if not main_process and MEMORY_ENTITLEMENTS.intersection(actual):
-        raise InstallerError("Una capability memoria è stata applicata a un componente diverso dall’app principale.")
+        raise InstallerError(tr('A memory capability was applied to a component other than the main app.'))
 
 
 def entitlement_allowed(allowed, value):
@@ -590,10 +640,10 @@ def assert_capabilities(effective, profile, requested, bundle_id):
     authorized = profile.get("Entitlements", {})
     for key, value in requested.items():
         if effective.get(key) != expand(value):
-            raise InstallerError("Xcode ha omesso o modificato la capability richiesta “" + key + "” per " + bundle_id)
+            raise InstallerError(tr('Xcode omitted or changed the requested capability “') + key + tr('” for ') + bundle_id)
     for key, value in effective.items():
         if key not in authorized or not entitlement_allowed(authorized[key], value):
-            raise InstallerError("Il profilo non autorizza la capability “" + key + "” per " + bundle_id)
+            raise InstallerError(tr('The profile does not authorize the capability “') + key + tr('” for ') + bundle_id)
 
 
 def identity_for_profile(profile, identities_output):
@@ -602,13 +652,13 @@ def identity_for_profile(profile, identities_output):
         digest = hashlib.sha1(certificate).hexdigest().upper()
         if digest in available:
             return digest
-    raise InstallerError("Il certificato autorizzato dal profilo non ha una chiave di firma disponibile. Controlla gli account in Xcode.")
+    raise InstallerError(tr('The certificate authorized by the profile has no available signing key. Check your accounts in Xcode.'))
 
 
 def pack_ipa(app, output):
     temporary = output.with_name(output.name + ".partial")
     if output.exists() or temporary.exists():
-        raise InstallerError("Il file di destinazione esiste già.")
+        raise InstallerError(tr('The destination file already exists.'))
     try:
         with zipfile.ZipFile(temporary, "x", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
             for p in sorted([app] + list(app.rglob("*"))):
@@ -623,7 +673,7 @@ def pack_ipa(app, output):
                     archive.write(p, relative)
         with zipfile.ZipFile(temporary) as archive:
             if archive.testzip():
-                raise InstallerError("Verifica dell’IPA firmata non riuscita.")
+                raise InstallerError(tr('The signed IPA could not be verified.'))
         temporary.replace(output)
     finally:
         if temporary.exists():
@@ -637,20 +687,22 @@ def sign_and_install(config):
     env = xcode_environment()
     device = next((d for d in discover_devices(env) if d["id"] == config["device"]), None)
     if not device or not device["udid"]:
-        raise InstallerError("L’iPhone selezionato non è disponibile o non è associato al Mac.")
+        raise InstallerError(tr('The selected iPhone is unavailable or is not paired with this Mac.'))
+    if config.get("install", True) and device.get("backend") == "ios-deploy":
+        legacy_installer(device)  # Check compatibility before any provisioning changes.
     metadata = inspect_ipa(config["ipa"])
     memory = bool(config.get("memory", False))
     new_id = team_bundle_id(metadata["bundleID"], team)
     if config.get("bundleID", new_id) != new_id:
-        raise InstallerError("L’identificativo deve coincidere con quello dell’IPA più il suffisso del team di firma selezionato.")
+        raise InstallerError(tr('The identifier must match the IPA identifier plus the selected signing team suffix.'))
     SUPPORT.mkdir(parents=True, exist_ok=True, mode=0o700)
     logs = SUPPORT / "Logs"; logs.mkdir(exist_ok=True, mode=0o700)
     log = logs / (dt.datetime.now().strftime("%Y%m%d-%H%M%S") + ".log"); log.touch(mode=0o600)
     emit("logfile", path=str(log))
-    emit("log", message="Team " + team + " · Bundle ID " + new_id + " (suffisso del team di firma)")
+    emit("log", message="Team " + team + " · Bundle ID " + new_id + tr(' (signing team suffix)'))
     with tempfile.TemporaryDirectory(prefix="xcode-ipa-sign-") as temp:
         work = Path(temp)
-        emit("phase", message="Preparazione dell’IPA", progress=0.05)
+        emit("phase", message=tr('Preparing the IPA'), progress=0.05)
         unpack_ipa(metadata["path"], work)
         root = work / metadata["root"]
         bundles = [root] + sorted([p for p in root.rglob("*") if p.suffix in (".app", ".appex") and (p / "Info.plist").is_file()])
@@ -658,7 +710,7 @@ def sign_and_install(config):
         for bundle in bundles:
             info = plistlib.loads((bundle / "Info.plist").read_bytes())
             if set(info.get("CFBundleSupportedPlatforms", ["iPhoneOS"])) - {"iPhoneOS"}:
-                raise InstallerError("Questo pacchetto contiene un’app Watch o una piattaforma diversa da iOS: " + bundle.name)
+                raise InstallerError(tr('This package contains a Watch app or a platform other than iOS: ') + bundle.name)
             binary = bundle_executable(bundle, info)
             check_encryption(binary)
             units.append(dict(path=bundle, info=info, old_id=info["CFBundleIdentifier"], original=entitlements_of(bundle)))
@@ -672,13 +724,13 @@ def sign_and_install(config):
                                                         allow_eva=not personal_team)
             unit["eva_policy"] = "personalTeam" if personal_team else "automatic"
         plan = signing_plan(root, units)
-        emit("log", message=str(len(units)) + " app/estensioni · " + str(len(plan)) + " componenti di codice da firmare")
-        emit("log", message="Increased Memory Limit: " + ("solo " + root.name if memory else "disattivato") + "; tutti i componenti restano inclusi nella firma.")
+        emit("log", message=str(len(units)) + tr(' apps/extensions · ') + str(len(plan)) + tr(' code components to sign'))
+        emit("log", message="Increased Memory Limit: " + (tr('only ') + root.name if memory else tr('off')) + tr('; every component is still included in signing.'))
         if personal_team:
-            emit("log", message="Extended Virtual Addressing: esclusa, non disponibile per i Personal Team. Increased Memory Limit resta indipendente.")
+            emit("log", message=tr('Extended Virtual Addressing: excluded, unavailable for Personal Teams. Increased Memory Limit stays independent.'))
         project = write_project(work / "Provisioning", units, team)
         for i, unit in enumerate(units):
-            emit("phase", message="Xcode: profilo " + unit["path"].name, progress=0.12 + 0.50 * i / len(units))
+            emit("phase", message=tr('Xcode: profile ') + unit["path"].name, progress=0.12 + 0.50 * i / len(units))
             args = ["/usr/bin/xcrun", "xcodebuild", "-project", project, "-scheme", unit["target"], "-configuration", "Debug",
                     "-derivedDataPath", work / "DerivedData",
                     "-sdk", "iphoneos", "-destination", "id=" + device["udid"], "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration",
@@ -696,12 +748,12 @@ def sign_and_install(config):
                 unit["requested"].pop(EVA)
                 unit["eva_policy"] = "unavailableForTeam"
                 (project.parent / (unit["target"] + ".entitlements")).write_bytes(plistlib.dumps(unit["requested"]))
-                emit("log", message="Extended Virtual Addressing non autorizzata da Xcode per questo team: riprovo senza EVA, mantenendo Increased Memory Limit e le altre capability richieste.")
+                emit("log", message=tr('Xcode did not authorize Extended Virtual Addressing for this team. Retrying without EVA, keeping Increased Memory Limit and all other requested capabilities.'))
                 run(args, env=env, log=log, timeout=600)
             product = work / "Products/Debug-iphoneos" / unit["product"]
             profile_path = product / "embedded.mobileprovision"
             if not profile_path.exists():
-                raise InstallerError("Xcode non ha generato il profilo per " + unit["new_id"])
+                raise InstallerError(tr('Xcode did not generate a profile for ') + unit["new_id"])
             profile = decode_profile(profile_path)
             assert_profile(profile, team, unit["new_id"], device["udid"], unit["memory"])
             identities = run(["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"], quiet=True).decode()
@@ -711,7 +763,7 @@ def sign_and_install(config):
             unit["app_identifier"] = profile.get("ApplicationIdentifierPrefix", [team])[0] + "." + unit["new_id"]
             unit["effective"] = entitlements_of(product)
             if not unit["effective"]:
-                raise InstallerError("Xcode non ha generato gli entitlement di firma.")
+                raise InstallerError(tr('Xcode did not generate signing entitlements.'))
             if not unit["is_main"]:
                 for key in MEMORY_ENTITLEMENTS: unit["effective"].pop(key, None)
             elif not unit["memory"]:
@@ -723,7 +775,7 @@ def sign_and_install(config):
             assert_eva_policy(unit["effective"], unit["requested"])
             assert_capabilities(unit["effective"], profile, unit["requested"], unit["new_id"])
             unit["expiry"] = profile["ExpirationDate"].isoformat()
-        emit("phase", message="Firma locale con il team " + team, progress=0.68)
+        emit("phase", message=tr('Signing locally with team ') + team, progress=0.68)
         for path in sorted(root.rglob("_CodeSignature"), key=lambda p: len(p.parts), reverse=True):
             if path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path)
@@ -744,14 +796,14 @@ def sign_and_install(config):
             run(["/usr/bin/codesign", "--verify", "--strict", "--verbose=2", path], log=log)
             if unit:
                 if plistlib.loads((path / "Info.plist").read_bytes())["CFBundleIdentifier"] != unit["new_id"]:
-                    raise InstallerError("L’identificativo di un componente non coincide con quello previsto per il team selezionato.")
+                    raise InstallerError(tr('A component identifier does not match the identifier expected for the selected team.'))
                 actual = entitlements_of(path)
                 assert_signature(actual, team, unit["app_identifier"], unit["memory"])
                 assert_memory_scope(actual, unit["is_main"])
                 assert_eva_policy(actual, unit["requested"])
                 assert_capabilities(actual, unit["profile_data"], unit["requested"], unit["new_id"])
         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "--verbose=2", root], log=log)
-        emit("phase", message="Verifica e creazione IPA firmata", progress=0.82)
+        emit("phase", message=tr('Verifying and exporting the signed IPA'), progress=0.82)
         output_dir = Path(config.get("outputDirectory") or str(Path.home() / "Downloads"))
         output_dir.mkdir(parents=True, exist_ok=True)
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", metadata["name"]).strip("-.") or "App"
@@ -770,9 +822,9 @@ def sign_and_install(config):
                             extensionPoint=u["info"].get("NSExtension",{}).get("NSExtensionPointIdentifier")) for u in units]), indent=2, ensure_ascii=False)+"\n")
         report_path.chmod(0o600)
         if config.get("install", True):
-            emit("phase", message="Installazione su " + device["name"], progress=0.93)
-            run(["/usr/bin/xcrun", "devicectl", "device", "install", "app", "--device", device["id"], root], env=env, log=log, timeout=600)
-        emit("complete", path=str(output), message="Installazione completata." if config.get("install", True) else "IPA firmata salvata.",
+            emit("phase", message=tr('Installing on ') + device["name"], progress=0.93)
+            install_app(root, device, env, log)
+        emit("complete", path=str(output), message=tr('Installation completed.') if config.get("install", True) else tr('Signed IPA saved.'),
              team=team, account=account["name"], memory=memory, expires=units[0]["expiry"],
              processCount=len(units), componentCount=len(plan), memoryProcessCount=int(memory), report=str(report_path))
 

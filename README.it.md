@@ -1,0 +1,65 @@
+# Xcode IPA Installer
+
+App macOS nativa per firmare IPA e installarle su iPhone con gli **account già autenticati in Xcode**. Seleziona account, team e dispositivo, poi firma sul Mac senza server anisette esterni.
+
+[English](README.md) · **[Scarica l’app](https://github.com/dre4moff/Xcode-IPA-Installer/releases/latest)** · **[Guida alla configurazione](docs/SETUP.it.md)** · [Licenza MIT](LICENSE)
+
+![Configurazione dell’account Xcode: schema illustrativo](docs/images/xcode-apple-accounts.it.svg)
+
+## Configurazione rapida
+
+1. Installa **Xcode completo**, aprilo e completa la configurazione iniziale degli strumenti iOS.
+2. In Xcode apri **Xcode → Settings… → Apple Accounts** e aggiungi il tuo Apple Account con **+ / Add Apple Account…**. Completa password e 2FA direttamente in Xcode. Nelle versioni precedenti la sezione si chiama **Accounts**.
+3. Collega l’iPhone via USB, autorizza il Mac e abilita **Impostazioni → Privacy e sicurezza → Modalità sviluppatore** sull’iPhone.
+4. Apri Xcode IPA Installer, aggiorna l’elenco e seleziona **account, team e iPhone**. Se il team non compare, usa **Configura team…** seguendo la [guida](docs/SETUP.it.md#3-configurare-il-team).
+5. Scegli l’IPA. Attiva **Increased Memory Limit** se necessario, poi usa **Solo firma** o **Firma e installa**.
+
+Il download contiene un’app universale **Apple Silicon e Intel**, per macOS 12 o successivo. Con Xcode 15+ si usa `devicectl`. Con Xcode precedente si usa `xcdevice` e, per installare via USB su iOS 16 o precedenti, `ios-deploy` installato separatamente con `brew install ios-deploy`. L’esportazione con Solo firma non richiede questo strumento. Per iOS 17+ serve una combinazione compatibile di Xcode e macOS. La build è firmata ad hoc e non è notarizzata. Se macOS la blocca, verifica l’origine del download e segui la [procedura Apple per aprire un’app attendibile](https://support.apple.com/en-us/102445), con l’eventuale pulsante **Apri comunque** in Impostazioni di Sistema → Privacy e sicurezza.
+
+## Interfaccia e lingue
+
+Il contenuto scorre mentre i comandi di firma restano in basso. Sulle finestre strette i campi si dispongono in colonna. Liquid Glass viene usato da macOS 26; macOS 12–25 usa materiali nativi e pulsanti standard. La lingua segue macOS: inglese come lingua principale e fallback, italiano disponibile, senza selettore nell’app. Anche i messaggi operativi sono localizzati.
+
+## Memoria e firma dei componenti
+
+- **Increased Memory Limit** viene richiesto e verificato **solo sull’eseguibile principale**, con lo stesso team che firma l’app. Se la checkbox è attiva e il profilo non lo autorizza, la procedura si interrompe: non viene prodotto un risultato dichiarato riuscito senza questa capability.
+- **Extended Virtual Addressing (EVA)** è separata. Se presente nell’IPA originale, viene mantenuta quando il team la supporta. È esclusa per i Personal Team; se Xcode ne segnala esplicitamente l’indisponibilità su un altro team, il provisioning viene ritentato una volta senza EVA. Increased Memory Limit resta indipendente. La regola vale per tutte le IPA.
+- App incorporate, estensioni, JIT helper, framework e librerie vengono comunque **firmati e verificati tutti**, dall’interno verso l’esterno. Le capability memoria non vengono applicate ai processi ausiliari. Framework e librerie condividono i limiti del processo che li carica.
+- Per impostazione predefinita le altre capability originali vengono conservate e richieste al team. I metadati WidgetKit e Live Activities e le relazioni tra identificativi vengono mantenuti. I gruppi del portachiavi vengono riscritti coerentemente; gli App Groups conservano i nomi originali.
+
+La capability memoria non aggiunge RAM fisica e il limite effettivo dipende da iOS e dal dispositivo. Live Activities, Dynamic Island, iCloud, App Groups e servizi push dipendono anche dall’app e dalle autorizzazioni del nuovo team. Una firma valida non trasferisce i servizi del team originale. [Memoria: documentazione Apple](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.kernel.increased-memory-limit) · [EVA: documentazione Apple](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.kernel.extended-virtual-addressing) · [ActivityKit](https://developer.apple.com/documentation/activitykit/displaying-live-data-with-live-activities)
+
+## Account e dati locali
+
+L’app legge i metadati degli account dalle preferenze di Xcode e usa `DEVELOPMENT_TEAM` per scegliere il team. Se lo stesso team risulta associato a più account autenticati, interrompe la firma: Xcode non offre qui una selezione univoca del singolo membro tramite il solo Team ID. I Personal Team distinti possono essere selezionati separatamente.
+
+Non importa password, OTP o token da Xcode e non esporta chiavi private. Xcode gestisce la propria sessione; `codesign` usa il Portachiavi del Mac. Quando necessario Xcode contatta i servizi Apple per App ID, dispositivi, certificati e profili. L’assenza di anisette remoto non elimina la necessità di una connessione ad Apple.
+
+L’IPA sorgente resta invariata. L’IPA firmata e un rapporto `.verification.json` vengono salvati in **Download**, anche con **Firma e installa**. Il rapporto elenca componenti, team, capability memoria e scadenze. I file di lavoro e DerivedData temporanei vengono rimossi al termine o all’annullamento. I log restano disponibili tramite **Apri log**.
+
+I dati locali si trovano in `~/Library/Application Support/Xcode IPA Installer`, oppure `~/.local/share/XcodeIPAInstaller` se la prima posizione non è scrivibile. `accounts.json` conserva le associazioni dei team. I log e i rapporti possono contenere nomi account, Team ID, identificativi dispositivi e percorsi: controllali prima di condividerli.
+
+**Dalla versione 1.0.5 il Bundle ID principale è quello originale più il suffisso del team di firma selezionato**: `com.example.App.ABCDEFGHIJ`. Se termina già con il Team ID corretto, non viene duplicato. Non vengono aggiunti prefissi o identificativi del Mac. Gli identificativi delle estensioni e delle app incorporate seguono il nuovo principale: ad esempio `com.example.App.ABCDEFGHIJ.Widget`. L’interfaccia mostra l’ID di firma in sola lettura e lo aggiorna quando cambi team.
+
+Il suffisso deriva dal team associato all’account Xcode selezionato. Il backend lo calcola indipendentemente dall’interfaccia, rifiuta un ID non corrispondente e verifica team, profilo e firma di ogni processo. Il rapporto registra `bundleIDPolicy: selectedTeamSuffix`, oltre a ID originali e finali. Le relazioni tra i componenti vengono aggiornate coerentemente; gli altri metadati vengono conservati.
+
+Un aggiornamento richiede l’intero Bundle ID della copia già installata e una firma compatibile. Se quella copia usa già lo stesso schema `<ID originale>.<Team ID>`, viene preparata con lo stesso identificativo principale. ID creati con altri schemi, inclusi i vecchi prefissi automatici dell’installer, restano app distinte: i dati non vengono migrati tra identificativi diversi. Se Apple non autorizza l’ID con il suffisso del team, la procedura si interrompe. L’eventuale `installation-id.txt` delle vecchie versioni viene conservato, ma non viene più utilizzato.
+
+## Compilazione e verifiche
+
+Non sono richieste dipendenze di terze parti: SwiftUI/AppKit, Python 3.8+ fornito dagli strumenti Xcode e utility di macOS/Xcode.
+
+```sh
+git clone https://github.com/dre4moff/Xcode-IPA-Installer.git
+cd Xcode-IPA-Installer
+zsh test.sh
+zsh build.sh "$HOME/Downloads/Xcode-IPA-Installer-build"
+```
+
+`build.sh` crea una nuova `Xcode IPA Installer.app` arm64 firmata ad hoc; rifiuta di sovrascrivere un’app già presente. `test.sh` compila fixture iOS con firma disabilitata e verifica il backend con firme ad hoc reali, controllando suffisso del team, relazioni tra componenti, metadati e parità della policy Swift/Python. Il provisioning Apple e l’installazione sono sostituiti da fixture: **i test non usano account reali e non installano nulla sull’iPhone**. Entrambi gli script puliscono i propri file temporanei.
+
+Sono coperti firma dei componenti annidati, policy principale-solo, EVA disponibile/non disponibile, conservazione delle altre capability e interruzione su profili o firme non conformi. Il collaudo con account Apple e dispositivo reale rimane separato dai test offline.
+
+Non sono supportate IPA App Store con eseguibili cifrati, pacchetti Watch ed eseguibili autonomi privi di un bundle app/estensione con profilo dedicato. I limiti e le scadenze del provisioning Apple continuano ad applicarsi.
+
+L’opzione memoria usa la stessa capability Apple impiegata da [GetMoreRam](https://github.com/hugeBlack/GetMoreRam). Questo progetto usa gli strumenti di firma di Xcode direttamente e non incorpora il suo codice.

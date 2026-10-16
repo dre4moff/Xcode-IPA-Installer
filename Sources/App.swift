@@ -46,7 +46,7 @@ final class InstallerModel: ObservableObject {
     @Published var isBusy = false
     @Published var isInstalling = false
     @Published var progress = 0.0
-    @Published var status = "Scegli un’IPA per iniziare."
+    @Published var status = L10n.text("Choose an IPA to get started.")
     @Published var logs = ""
     @Published var xcodeVersion = ""
     @Published var errorMessage: String?
@@ -76,7 +76,7 @@ final class InstallerModel: ObservableObject {
         panel.allowedContentTypes = [UTType(filenameExtension: "ipa") ?? .zip]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Scegli l’IPA da firmare con un account già presente in Xcode."
+        panel.message = L10n.text("Choose an IPA to sign with an existing Xcode account.")
         if panel.runModal() == .OK, let url = panel.url { inspect(url) }
     }
 
@@ -119,7 +119,7 @@ final class InstallerModel: ObservableObject {
         call("run", data: data)
     }
 
-    func cancel() { process?.terminate(); status = "Annullamento in corso…" }
+    func cancel() { process?.terminate(); status = L10n.text("Cancelling…") }
 
     func openXcode() {
         NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Xcode.app"))
@@ -144,10 +144,10 @@ final class InstallerModel: ObservableObject {
             }
             syncTeam()
             if !phones.contains(where: { $0.id == deviceID }) { deviceID = phones.first?.id ?? "" }
-            status = accounts.isEmpty ? "Aggiungi un account in Xcode → Impostazioni → Apple Accounts." : "Account Xcode e dispositivi aggiornati."
+            status = accounts.isEmpty ? L10n.text("Add an account in Xcode → Settings → Apple Accounts.") : L10n.text("Accounts and devices are up to date.")
         case "ipa":
             if let value = try? JSONDecoder().decode(IPADetails.self, from: data) {
-                ipa = value; updateBundleID(); status = "IPA pronta per la firma con il suffisso del team selezionato."
+                ipa = value; updateBundleID(); status = L10n.text("Ready to sign with the selected team.")
             }
         case "phase":
             status = event["message"] as? String ?? status
@@ -156,13 +156,13 @@ final class InstallerModel: ObservableObject {
         case "log": appendLog(event["message"] as? String ?? "")
         case "logfile": logPath = event["path"] as? String
         case "error":
-            errorMessage = event["message"] as? String ?? "Operazione non riuscita."
-            status = "Operazione non completata."; appendLog(errorMessage ?? "")
+            errorMessage = event["message"] as? String ?? L10n.text("The operation failed.")
+            status = L10n.text("The operation could not be completed."); appendLog(errorMessage ?? "")
         case "complete":
             resultPath = event["path"] as? String
             verificationPath = event["report"] as? String
-            let base = event["message"] as? String ?? "Operazione completata."
-            let memory = (event["memory"] as? Bool ?? false) ? "Increased Memory Limit verificato solo sull’app principale." : "Increased Memory Limit disattivato."
+            let base = event["message"] as? String ?? L10n.text("Operation completed.")
+            let memory = (event["memory"] as? Bool ?? false) ? L10n.text("Increased Memory Limit verified on the main app.") : L10n.text("Increased Memory Limit is off.")
             resultMessage = base + "\n" + memory
             status = base; progress = 1
         case "saved":
@@ -185,6 +185,7 @@ final class InstallerModel: ObservableObject {
         child.standardOutput = output; child.standardError = output; child.standardInput = input
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["XCODE_IPA_LANGUAGE"] = L10n.language
         child.environment = environment
         process = child
         do {
@@ -215,161 +216,9 @@ final class InstallerModel: ObservableObject {
             child.waitUntilExit()
             DispatchQueue.main.async {
                 self.isBusy = false; self.isInstalling = false; self.process = nil
-                if child.terminationStatus != 0 && self.errorMessage == nil { self.errorMessage = "Il processo è terminato. Controlla i dettagli dell’operazione." }
+                if child.terminationStatus != 0 && self.errorMessage == nil { self.errorMessage = L10n.text("The process stopped. Check the activity details.") }
                 if command == "save-account" && child.terminationStatus == 0 { self.refresh() }
             }
-        }
-    }
-}
-
-struct InstallerView: View {
-    @StateObject private var model = InstallerModel()
-    @State private var dropTarget = false
-    @State private var advanced = false
-    @State private var details = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) {
-                Image(systemName: "iphone.and.arrow.forward").font(.system(size: 34)).foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Xcode IPA Installer").font(.title2.bold())
-                    Text("Account nativi di Xcode · firma sul tuo Mac").foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") · \(model.xcodeVersion)")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            GroupBox {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Label(model.ipa?.name ?? "Scegli un’IPA", systemImage: "doc.zipper")
-                            .font(.headline)
-                        Spacer()
-                        Button("Scegli IPA…", action: model.chooseIPA).disabled(model.isBusy)
-                    }
-                    if let ipa = model.ipa {
-                        Text("\(ipa.bundleID) · \(ipa.version)\(ipa.extensions > 0 ? " · \(ipa.extensions) estensioni" : "")")
-                            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        Text(ipa.path).font(.caption).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
-                    } else {
-                        Text("Trascina qui il file oppure selezionalo dal Mac.").foregroundStyle(.secondary)
-                    }
-                }.padding(8)
-            }
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(dropTarget ? Color.accentColor : .clear, lineWidth: 2))
-            .onDrop(of: [UTType.fileURL.identifier], isTargeted: $dropTarget) { items in
-                guard !model.isBusy, let item = items.first else { return false }
-                _ = item.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
-                    if let data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                        DispatchQueue.main.async { model.inspect(url) }
-                    }
-                }
-                return true
-            }
-            GroupBox {
-                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
-                    GridRow {
-                        Text("Account Xcode")
-                        Picker("Account Xcode", selection: $model.accountID) {
-                            ForEach(model.accounts) { Text($0.name).tag($0.id) }
-                        }.labelsHidden()
-                        Button(action: model.refresh) { Image(systemName: "arrow.clockwise") }.help("Aggiorna account e dispositivi")
-                    }
-                    GridRow {
-                        Text("Team di firma")
-                        if model.selectedAccount?.teams.isEmpty == false {
-                            Picker("Team di firma", selection: $model.teamID) {
-                                ForEach(model.selectedAccount?.teams ?? []) { Text("\($0.name) · \($0.id)").tag($0.id) }
-                            }.labelsHidden()
-                        } else {
-                            Button("Configura il Team ID…", action: model.configureTeam).disabled(model.selectedAccount == nil)
-                        }
-                    }
-                    GridRow {
-                        Text("iPhone")
-                        Picker("iPhone", selection: $model.deviceID) {
-                            ForEach(model.phones) { Text("\($0.name) · iOS \($0.version)").tag($0.id) }
-                        }.labelsHidden()
-                    }
-                }.padding(8)
-            }.disabled(model.isBusy)
-            Toggle(isOn: $model.increasedMemory) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Increased Memory Limit").font(.headline)
-                    Text("Solo sull’app principale, con lo stesso team della firma. Tutti gli altri componenti vengono comunque firmati e verificati.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }.disabled(model.isBusy)
-            Text(model.selectedTeam?.personal == true
-                 ? "EVA: esclusa per questo Personal Team. Increased Memory Limit resta attivo se selezionato."
-                 : "EVA: mantenuta se presente nell’IPA e autorizzata dal team; esclusa automaticamente se Xcode non la supporta.")
-                .font(.caption).foregroundStyle(.secondary)
-            DisclosureGroup("Opzioni", isExpanded: $advanced) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Identificativo di firma: \(model.bundleID.isEmpty ? "seleziona IPA e team" : model.bundleID)")
-                        .textSelection(.enabled)
-                    Text("Il principale usa l’ID originale più il Team ID dell’account selezionato. Il suffisso non viene duplicato. Gli ID dei componenti seguono il principale e tutti i profili devono appartenere allo stesso team.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Toggle("Mantieni le capability originali dell’IPA", isOn: $model.preserveCapabilities)
-                    Text("Le capability originali vengono richieste al tuo team; EVA segue la disponibilità del team e le capability memoria restano solo sul principale. Disattivandole puoi perdere App Groups, iCloud o aggiornamenti push.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Button("Apri Xcode", action: model.openXcode)
-                        Button("Configura team…", action: model.configureTeam).disabled(model.selectedAccount == nil)
-                    }
-                }.padding(.top, 6)
-            }.disabled(model.isBusy)
-            if model.isBusy {
-                ProgressView(value: model.isInstalling ? model.progress : nil)
-            }
-            Text(model.status).font(.callout).foregroundStyle(.secondary).lineLimit(2)
-            if let result = model.resultPath {
-                HStack {
-                    Label(model.resultMessage, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                    Spacer()
-                    Button("Mostra IPA") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: result)]) }
-                    if let path = model.verificationPath {
-                        Button("Verifica componenti") { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
-                    }
-                }.font(.callout)
-            }
-            if let error = model.errorMessage {
-                ScrollView { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                    .frame(maxHeight: 90)
-            }
-            DisclosureGroup("Dettagli dell’operazione", isExpanded: $details) {
-                ScrollView { Text(model.logs.isEmpty ? "Nessuna operazione in corso." : model.logs).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                    .frame(height: 100)
-                if let path = model.logPath { Button("Apri log") { NSWorkspace.shared.open(URL(fileURLWithPath: path)) } }
-            }
-            Spacer(minLength: 0)
-            HStack {
-                Text("IPA firmata salvata anche in Download.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if model.isInstalling { Button("Annulla", action: model.cancel) }
-                else {
-                    Button("Solo firma") { model.start(install: false) }.disabled(!model.canRun)
-                    Button("Firma e installa") { model.start(install: true) }.buttonStyle(.borderedProminent).disabled(!model.canRun)
-                }
-            }
-        }
-        .padding(24).frame(minWidth: 740, idealWidth: 780, minHeight: 650)
-        .onAppear(perform: model.refresh)
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.cancel() }
-        .onChange(of: model.accountID) { _ in model.syncTeam() }
-        .onChange(of: model.teamID) { _ in model.updateBundleID() }
-        .sheet(isPresented: $model.showTeamSetup) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Team dell’account Xcode").font(.title3.bold())
-                Text("\(model.selectedAccount?.name ?? "")").foregroundStyle(.secondary)
-                TextField("Nome account", text: $model.teamSetupName)
-                TextField("Team ID (10 caratteri)", text: $model.teamSetupID)
-                Toggle("Personal Team gratuito", isOn: $model.teamSetupPersonal)
-                Text("Serve solo quando Xcode non ha ancora salvato il team nella propria cache. Non vengono richieste password o token.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack { Spacer(); Button("Annulla") { model.showTeamSetup = false }; Button("Salva", action: model.saveTeam).keyboardShortcut(.defaultAction) }
-            }.padding(24).frame(width: 420)
         }
     }
 }
@@ -387,6 +236,7 @@ struct XcodeIPAInstallerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
         WindowGroup { InstallerView() }.windowStyle(.titleBar)
-        .commands { CommandGroup(replacing: .newItem) {} }
+            .windowToolbarStyle(.unifiedCompact)
+            .commands { CommandGroup(replacing: .newItem) {} }
     }
 }

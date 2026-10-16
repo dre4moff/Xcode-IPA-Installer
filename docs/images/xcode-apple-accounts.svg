@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1040" height="600" viewBox="0 0 1040 600" role="img" aria-labelledby="title description">
-  <title id="title">Aggiungere un Apple Account in Xcode</title>
-  <desc id="description">Schema illustrativo. Aprire Xcode, menu Xcode, Settings o Command virgola, Apple Accounts nella barra laterale, poi il pulsante più o Add Apple Account.</desc>
+  <title id="title">Add an Apple Account in Xcode</title>
+  <desc id="description">Illustrative diagram. Open Xcode, choose Xcode, Settings or Command comma, Apple Accounts in the sidebar, then plus or Add Apple Account.</desc>
   <defs>
     <style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#172338}.muted{fill:#54657b}.small{font-size:15px}.label{font-size:18px}.step{font-size:18px;font-weight:700;fill:white}</style>
   </defs>
   <rect width="1040" height="600" rx="24" fill="#eef3fb"/>
-  <text x="44" y="55" font-size="27" font-weight="700">Accedi in Xcode, poi scegli l’account nell’installer</text>
-  <text x="44" y="84" class="small muted">Schema illustrativo · nessun account reale · i nomi possono variare tra versioni</text>
+  <text x="44" y="55" font-size="24" font-weight="700">Sign in to Xcode, then choose your account in the installer</text>
+  <text x="44" y="84" class="small muted">Illustrative diagram · no real account data · controls may vary by version</text>
   <rect x="44" y="111" width="952" height="52" rx="12" fill="#fff" stroke="#d2dce9"/>
   <text x="67" y="144" class="label" font-weight="700">Xcode</text>
   <text x="157" y="144" class="label muted">File</text><text x="214" y="144" class="label muted">Edit</text>
@@ -14,7 +14,7 @@
   <text x="356" y="144" class="label" font-weight="600">Xcode → Settings…</text>
   <text x="651" y="144" class="label muted">⌘ ,</text>
   <circle cx="797" cy="137" r="17" fill="#1766d6"/><text x="791" y="143" class="step">1</text>
-  <text x="825" y="143" class="small muted">Apri Settings</text>
+  <text x="825" y="143" class="small muted">Open Settings</text>
   <rect x="44" y="183" width="952" height="298" rx="14" fill="#fff" stroke="#c6d2e2"/>
   <path d="M58 183H982Q996 183 996 197V224H44V197Q44 183 58 183" fill="#dfe7f1"/>
   <circle cx="64" cy="204" r="5" fill="#f5776c"/><circle cx="82" cy="204" r="5" fill="#efbd4f"/><circle cx="100" cy="204" r="5" fill="#64ba6b"/>
@@ -24,15 +24,15 @@
   <rect x="58" y="282" width="215" height="40" rx="8" fill="#1766d6"/>
   <text x="74" y="308" class="label" style="fill:white">Apple Accounts</text>
   <circle cx="252" cy="346" r="17" fill="#1766d6"/><text x="246" y="352" class="step">2</text>
-  <text x="68" y="354" class="small muted">Seleziona la sezione</text>
+  <text x="68" y="354" class="small muted">Select this section</text>
   <text x="326" y="264" font-size="23" font-weight="700">Apple Accounts</text>
-  <text x="326" y="301" class="label muted">Aggiungi l’account che userai per firmare.</text>
+  <text x="326" y="301" class="label muted">Add the account you will use for signing.</text>
   <rect x="326" y="324" width="340" height="45" rx="9" fill="#1766d6"/>
   <text x="347" y="353" class="label" style="fill:white" font-weight="600">+  Add Apple Account…</text>
   <circle cx="707" cy="346" r="17" fill="#1766d6"/><text x="701" y="352" class="step">3</text>
-  <text x="736" y="352" class="small muted">Aggiungi account</text>
-  <text x="326" y="409" class="label">Completa password e 2FA dentro Xcode.</text>
-  <text x="326" y="437" class="small muted">L’installer non richiede password o copie dei token.</text>
-  <text x="44" y="522" font-size="20" font-weight="700">Poi: apri Xcode IPA Installer → Aggiorna → Account Xcode → Team di firma</text>
-  <text x="44" y="558" class="small muted">Versioni precedenti: Preferences… → Accounts. Guida completa in docs/SETUP.md.</text>
+  <text x="736" y="352" class="small muted">Add account</text>
+  <text x="326" y="409" class="label">Complete sign-in and 2FA inside Xcode.</text>
+  <text x="326" y="437" class="small muted">The installer does not request passwords or copied tokens.</text>
+  <text x="44" y="522" font-size="20" font-weight="700">Then: Xcode IPA Installer → Refresh → Xcode account → Signing team</text>
+  <text x="44" y="558" class="small muted">Older versions: Preferences… → Accounts. Full guide in docs/SETUP.md.</text>
 </svg>
