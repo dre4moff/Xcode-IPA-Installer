@@ -35,9 +35,11 @@ L’IPA sorgente resta invariata. L’IPA firmata e un rapporto `.verification.j
 
 I dati locali si trovano in `~/Library/Application Support/Xcode IPA Installer`, oppure `~/.local/share/XcodeIPAInstaller` se la prima posizione non è scrivibile. `accounts.json` conserva le associazioni dei team. I log e i rapporti possono contenere nomi account, Team ID, identificativi dispositivi e percorsi: controllali prima di condividerli.
 
-**Dalla versione 1.0.4 gli identificativi originali dell’IPA restano invariati**, comprese estensioni e app incorporate. Non vengono aggiunti prefissi, suffissi del team o identificativi del Mac; l’interfaccia li mostra senza consentire la rinomina. Anche i file `Info.plist` vengono conservati. Il rapporto registra `bundleIDPolicy: preserveOriginal`.
+**Dalla versione 1.0.5 il Bundle ID principale è quello originale più il suffisso del team di firma selezionato**: `com.example.App.ABCDEFGHIJ`. Se termina già con il Team ID corretto, non viene duplicato. Non vengono aggiunti prefissi o identificativi del Mac. Gli identificativi delle estensioni e delle app incorporate seguono il nuovo principale: ad esempio `com.example.App.ABCDEFGHIJ.Widget`. L’interfaccia mostra l’ID di firma in sola lettura e lo aggiorna quando cambi team.
 
-Un aggiornamento richiede lo stesso Bundle ID della copia già installata e una firma compatibile. Le versioni fino alla 1.0.3 generavano un ID distinto: un’IPA con ID originale differente da quello installato continuerà a essere un’app diversa. L’installer non rinomina l’IPA per forzare una sostituzione. Se Apple non autorizza l’ID originale per il team selezionato, la procedura si interrompe. L’eventuale `installation-id.txt` delle vecchie versioni viene conservato, ma non viene più utilizzato.
+Il suffisso deriva dal team associato all’account Xcode selezionato. Il backend lo calcola indipendentemente dall’interfaccia, rifiuta un ID non corrispondente e verifica team, profilo e firma di ogni processo. Il rapporto registra `bundleIDPolicy: selectedTeamSuffix`, oltre a ID originali e finali. Le relazioni tra i componenti vengono aggiornate coerentemente; gli altri metadati vengono conservati.
+
+Un aggiornamento richiede l’intero Bundle ID della copia già installata e una firma compatibile. Se quella copia usa già lo stesso schema `<ID originale>.<Team ID>`, viene preparata con lo stesso identificativo principale. ID creati con altri schemi, inclusi i vecchi prefissi automatici dell’installer, restano app distinte: i dati non vengono migrati tra identificativi diversi. Se Apple non autorizza l’ID con il suffisso del team, la procedura si interrompe. L’eventuale `installation-id.txt` delle vecchie versioni viene conservato, ma non viene più utilizzato.
 
 ## Compilazione e verifiche
 
@@ -50,7 +52,7 @@ zsh test.sh
 zsh build.sh "$HOME/Downloads/Xcode-IPA-Installer-build"
 ```
 
-`build.sh` crea una nuova `Xcode IPA Installer.app` arm64 firmata ad hoc; rifiuta di sovrascrivere un’app già presente. `test.sh` compila fixture iOS con firma disabilitata e verifica il backend con firme ad hoc reali, controllando anche la conservazione degli identificativi e dei file `Info.plist` di tutti i componenti. Il provisioning Apple e l’installazione sono sostituiti da fixture: **i test non usano account reali e non installano nulla sull’iPhone**. Entrambi gli script puliscono i propri file temporanei.
+`build.sh` crea una nuova `Xcode IPA Installer.app` arm64 firmata ad hoc; rifiuta di sovrascrivere un’app già presente. `test.sh` compila fixture iOS con firma disabilitata e verifica il backend con firme ad hoc reali, controllando suffisso del team, relazioni tra componenti, metadati e parità della policy Swift/Python. Il provisioning Apple e l’installazione sono sostituiti da fixture: **i test non usano account reali e non installano nulla sull’iPhone**. Entrambi gli script puliscono i propri file temporanei.
 
 Sono coperti firma dei componenti annidati, policy principale-solo, EVA disponibile/non disponibile, conservazione delle altre capability e interruzione su profili o firme non conformi. Il collaudo con account Apple e dispositivo reale rimane separato dai test offline.
 

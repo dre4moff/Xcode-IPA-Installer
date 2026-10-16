@@ -61,7 +61,7 @@ final class InstallerModel: ObservableObject {
 
     var selectedAccount: XcodeAccount? { accounts.first { $0.id == accountID } }
     var selectedTeam: SigningTeam? { selectedAccount?.teams.first { $0.id == teamID } }
-    var bundleID: String { ipa?.bundleID ?? "" }
+    var bundleID: String { ipa.flatMap { TeamBundleIDPolicy.make(original: $0.bundleID, team: teamID) } ?? "" }
     var canRun: Bool {
         !isBusy && ipa != nil && selectedTeam != nil && phones.contains { $0.id == deviceID } && !bundleID.isEmpty
     }
@@ -142,7 +142,7 @@ final class InstallerModel: ObservableObject {
             status = accounts.isEmpty ? "Aggiungi un account in Xcode → Impostazioni → Apple Accounts." : "Account Xcode e dispositivi aggiornati."
         case "ipa":
             if let value = try? JSONDecoder().decode(IPADetails.self, from: data) {
-                ipa = value; status = "IPA pronta per la firma. Identificativi originali conservati."
+                ipa = value; status = "IPA pronta per la firma con il suffisso del team selezionato."
             }
         case "phase":
             status = event["message"] as? String ?? status
@@ -302,9 +302,9 @@ struct InstallerView: View {
                 .font(.caption).foregroundStyle(.secondary)
             DisclosureGroup("Opzioni", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Identificativo originale: \(model.bundleID.isEmpty ? "seleziona un’IPA" : model.bundleID)")
+                    Text("Identificativo di firma: \(model.bundleID.isEmpty ? "seleziona IPA e team" : model.bundleID)")
                         .textSelection(.enabled)
-                    Text("Gli identificativi di app, estensioni e app incorporate restano quelli dell’IPA. Un aggiornamento richiede lo stesso ID della copia installata e una firma compatibile.")
+                    Text("Il principale usa l’ID originale più il Team ID dell’account selezionato. Il suffisso non viene duplicato. Gli ID dei componenti seguono il principale e tutti i profili devono appartenere allo stesso team.")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Mantieni le capability originali dell’IPA", isOn: $model.preserveCapabilities)
                     Text("Le capability originali vengono richieste al tuo team; EVA segue la disponibilità del team e le capability memoria restano solo sul principale. Disattivandole puoi perdere App Groups, iCloud o aggiornamenti push.")

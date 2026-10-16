@@ -30,3 +30,17 @@ export XCODE_IPA_FIXTURES="$test_temp/Products/Debug-iphoneos"
 xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
     -dynamiclib -x c "$test_temp/Project/main.c" -o "$XCODE_IPA_FIXTURES/libFixture.dylib"
 xcrun python3 -m unittest discover -s "$project_dir/Tests" -v
+xcrun swiftc -parse-as-library -swift-version 5 -module-cache-path "$test_temp/SwiftModules" \
+    "$project_dir/Sources/TeamBundleIDPolicy.swift" "$project_dir/Tests/TeamBundleIDPolicyTests.swift" -o "$test_temp/policy-tests"
+"$test_temp/policy-tests" > "$test_temp/swift-policy.json"
+xcrun python3 - <<'PY'
+import importlib.util,json,os
+from pathlib import Path
+root=Path(os.environ['XCODE_IPA_PROJECT'])
+spec=importlib.util.spec_from_file_location('installer',root/'Backend/installer.py')
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+values=json.loads((Path(os.environ['XCODE_IPA_TEMP'])/'swift-policy.json').read_text())
+for v in values:
+    assert m.team_bundle_id(v['original'],v['team'])==v['bundleID']
+print('Swift/Python team-suffix parity: 3 vectors passed, invalid-input guards passed')
+PY

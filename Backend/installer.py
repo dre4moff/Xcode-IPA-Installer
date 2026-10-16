@@ -76,7 +76,7 @@ def run(args, env=None, log=None, timeout=180, quiet=False):
             else:
                 detail = "\n".join(lines[-8:]) if lines else text[-2200:]
             if "Failed Registering Bundle Identifier" in text:
-                detail += "\n\nApple non accetta l’identificativo originale dell’IPA per questo team. L’installer lo conserva senza rinominarlo."
+                detail += "\n\nApple non accetta l’identificativo con il suffisso del team selezionato."
             raise InstallerError(redact(detail.strip()) or "Comando non riuscito: " + str(args[0]))
         if not quiet and log:
             for line in text.splitlines():
@@ -387,6 +387,27 @@ def original_bundle_ids(bundles):
     return {value: value for value in bundles}
 
 
+def team_bundle_id(original, team):
+    if not valid_bundle_id(original) or not re.fullmatch(r"[A-Z0-9]{10}", team):
+        raise InstallerError("Identificativo originale o Team ID non valido.")
+    result = original if original.endswith("." + team) else original + "." + team
+    if not valid_bundle_id(result):
+        raise InstallerError("L’identificativo con il suffisso del team supera 255 caratteri.")
+    return result
+
+
+def team_bundle_mapping(bundles, root_id, team):
+    original_bundle_ids(bundles)
+    root = team_bundle_id(root_id, team)
+    result = {}
+    for old in bundles:
+        target = root + old[len(root_id):] if old == root_id or old.startswith(root_id + ".") else root + "." + old
+        if not valid_bundle_id(target) or target.lower() in {value.lower() for value in result.values()}:
+            raise InstallerError("Gli identificativi dei componenti con il team selezionato non sono validi o univoci.")
+        result[old] = target
+    return result
+
+
 def rewrite(value, mapping, old_prefix=None, new_prefix=None):
     if isinstance(value, dict):
         return {k: rewrite(v, mapping, old_prefix, new_prefix) for k, v in value.items()}
@@ -619,14 +640,14 @@ def sign_and_install(config):
         raise InstallerError("L’iPhone selezionato non è disponibile o non è associato al Mac.")
     metadata = inspect_ipa(config["ipa"])
     memory = bool(config.get("memory", False))
-    new_id = metadata["bundleID"]
+    new_id = team_bundle_id(metadata["bundleID"], team)
     if config.get("bundleID", new_id) != new_id:
-        raise InstallerError("L’identificativo originale dell’IPA viene conservato. La rinomina tramite bundleID non è consentita.")
+        raise InstallerError("L’identificativo deve coincidere con quello dell’IPA più il suffisso del team di firma selezionato.")
     SUPPORT.mkdir(parents=True, exist_ok=True, mode=0o700)
     logs = SUPPORT / "Logs"; logs.mkdir(exist_ok=True, mode=0o700)
     log = logs / (dt.datetime.now().strftime("%Y%m%d-%H%M%S") + ".log"); log.touch(mode=0o600)
     emit("logfile", path=str(log))
-    emit("log", message="Team " + team + " · Bundle ID originale " + new_id + " (conservato)")
+    emit("log", message="Team " + team + " · Bundle ID " + new_id + " (suffisso del team di firma)")
     with tempfile.TemporaryDirectory(prefix="xcode-ipa-sign-") as temp:
         work = Path(temp)
         emit("phase", message="Preparazione dell’IPA", progress=0.05)
@@ -641,7 +662,7 @@ def sign_and_install(config):
             binary = bundle_executable(bundle, info)
             check_encryption(binary)
             units.append(dict(path=bundle, info=info, old_id=info["CFBundleIdentifier"], original=entitlements_of(bundle)))
-        mapping = original_bundle_ids([u["old_id"] for u in units])
+        mapping = team_bundle_mapping([u["old_id"] for u in units], metadata["bundleID"], team)
         for unit in units:
             unit["is_main"] = unit["path"] == root
             unit["memory"] = memory and unit["is_main"]
@@ -707,7 +728,9 @@ def sign_and_install(config):
             if path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path)
         for unit in units:
-            # Keep the IPA's Info.plist and relationships byte-for-byte, including IDs.
+            info = rewrite(unit["info"], mapping)
+            info["CFBundleIdentifier"] = unit["new_id"]
+            (unit["path"] / "Info.plist").write_bytes(plistlib.dumps(info))
             shutil.copyfile(unit["profile"], unit["path"] / "embedded.mobileprovision")
         for i, (path, unit) in enumerate(plan):
             identity = unit["identity"] if unit else units[0]["identity"]
@@ -720,8 +743,8 @@ def sign_and_install(config):
             run(args + [path], log=log)
             run(["/usr/bin/codesign", "--verify", "--strict", "--verbose=2", path], log=log)
             if unit:
-                if plistlib.loads((path / "Info.plist").read_bytes())["CFBundleIdentifier"] != unit["old_id"]:
-                    raise InstallerError("L’identificativo originale di un componente è stato modificato.")
+                if plistlib.loads((path / "Info.plist").read_bytes())["CFBundleIdentifier"] != unit["new_id"]:
+                    raise InstallerError("L’identificativo di un componente non coincide con quello previsto per il team selezionato.")
                 actual = entitlements_of(path)
                 assert_signature(actual, team, unit["app_identifier"], unit["memory"])
                 assert_memory_scope(actual, unit["is_main"])
@@ -736,9 +759,9 @@ def sign_and_install(config):
         pack_ipa(root, output)
         report_path = output.with_suffix(".verification.json")
         report_path.write_text(json.dumps(dict(team=team, account=account["name"], personalTeam=personal_team,
-            memoryRequested=memory, memoryScope="mainExecutableOnly", extendedVirtualAddressingPolicy="automaticForTeam", bundleIDPolicy="preserveOriginal",
+            memoryRequested=memory, memoryScope="mainExecutableOnly", extendedVirtualAddressingPolicy="automaticForTeam", bundleIDPolicy="selectedTeamSuffix",
             codeComponents=[dict(path=str(p.relative_to(root.parent)), kind="app/extension" if unit else "library/bundle", signatureVerified=True) for p,unit in plan],
-            processes=[dict(bundleID=u["new_id"], originalBundleID=u["old_id"], bundleIDPreserved=True,
+            processes=[dict(bundleID=u["new_id"], originalBundleID=u["old_id"], bundleIDVerified=True,
                             team=team, mainExecutable=u["is_main"], memoryRequested=u["memory"],
                             memoryVerified=u["memory"], memoryPolicyVerified=True, expires=u["expiry"],
                             extendedVirtualAddressing=u["effective"].get(EVA, False), evaDecision=u["eva_policy"],

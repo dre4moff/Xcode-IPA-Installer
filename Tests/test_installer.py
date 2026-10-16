@@ -63,6 +63,19 @@ class CoreTests(unittest.TestCase):
         identifiers=["com.Example.App", "com.Example.App.Share", "other.vendor.Companion"]
         self.assertEqual(m.original_bundle_ids(identifiers),{value:value for value in identifiers})
 
+    def test_team_suffix_matches_selected_team_without_duplication(self):
+        original="com.example.App"
+        expected=original+"."+TEAM
+        self.assertEqual(m.team_bundle_id(original,TEAM),expected)
+        self.assertEqual(m.team_bundle_id(expected,TEAM),expected)
+        self.assertEqual(m.team_bundle_id(original,OTHER),original+"."+OTHER)
+        mapping=m.team_bundle_mapping([original,original+".Widget","other.vendor.Companion"],original,TEAM)
+        self.assertEqual(mapping[original],expected)
+        self.assertEqual(mapping[original+".Widget"],expected+".Widget")
+        self.assertEqual(mapping["other.vendor.Companion"],expected+".other.vendor.Companion")
+        with self.assertRaises(m.InstallerError):m.team_bundle_id(original,"invalid")
+        with self.assertRaises(m.InstallerError):m.team_bundle_id("a."+"z"*250,TEAM)
+
     def test_install_error_keeps_free_profile_limit_and_occupied_identifiers(self):
         output=b'ERROR: Failed to install the app on the device.\nNSLocalizedRecoverySuggestion = This device has reached the maximum number of installed apps using a free developer profile: {( "ABCDEFGHIJ.com.example.ExistingApp" )}\nFunctionName = -[MIFreeProfileValidatedAppTracker _onQueue_addReferenceForApplicationIdentifier:bundle:error:]'
         process=Mock(returncode=1)
@@ -206,7 +219,8 @@ class CoreTests(unittest.TestCase):
 class OfflinePipelineTests(unittest.TestCase):
     """Real local ad-hoc signing/ZIP verification; Apple provisioning/install always intercepted."""
     def scenario(self, memory, wrong_team=False, main_memory_missing=False, original_eva=False,
-                 personal_team=False, eva_rejected=False, unrelated_rejection=False, rename_attempt=False):
+                 personal_team=False, eva_rejected=False, unrelated_rejection=False, rename_attempt=False,
+                 already_suffixed=False):
         fixture = Path(os.environ["XCODE_IPA_FIXTURES"])
         events, commands = [], []
         real_run = m.run
@@ -217,10 +231,12 @@ class OfflinePipelineTests(unittest.TestCase):
             shutil.copytree(fixture/"Provision1.appex", extension)
             companion=app/"Companions/Companion.app";companion.parent.mkdir()
             shutil.copytree(fixture/"Provision0.app",companion)
-            for p, bundle_id in [(app,"local.fixture.app"),(extension,"local.fixture.app.share"),(companion,"local.fixture.app.companion")]:
+            original_id="local.fixture.app"+("."+TEAM if already_suffixed else "")
+            target_id="local.fixture.app."+TEAM
+            for p, bundle_id in [(app,original_id),(extension,original_id+".share"),(companion,original_id+".companion")]:
                 info = plistlib.loads((p/"Info.plist").read_bytes());info["CFBundleIdentifier"] = bundle_id
                 if p==app:info["NSSupportsLiveActivities"]=True
-                elif p==extension:info["NSExtension"]={"NSExtensionPointIdentifier":"com.apple.widgetkit-extension"}
+                elif p==extension:info["NSExtension"]={"NSExtensionPointIdentifier":"com.apple.widgetkit-extension","ContainingApp":original_id}
                 (p/"Info.plist").write_bytes(plistlib.dumps(info))
             library=fixture/"libFixture.dylib"
             for container in [app/"Frameworks/Runtime.framework",extension/"Frameworks/Inner.framework"]:
@@ -286,7 +302,7 @@ class OfflinePipelineTests(unittest.TestCase):
                  patch.object(m,"emit",side_effect=lambda kind,**values:events.append(dict(type=kind,**values))):
                 config = dict(account=ACCOUNT["id"],team=TEAM,device="fixture",ipa=str(source),memory=memory,
                               outputDirectory=str(temp/"Output"),install=True)
-                if rename_attempt:config["bundleID"]="local.resigned.app"
+                if rename_attempt:config["bundleID"]="local.fixture.app."+OTHER
                 if wrong_team or main_memory_missing or unrelated_rejection or rename_attempt:
                     with self.assertRaises(m.InstallerError): m.sign_and_install(config)
                     self.assertFalse(any("devicectl" in c for c in commands))
@@ -299,7 +315,12 @@ class OfflinePipelineTests(unittest.TestCase):
                 dest=temp/"Verify";dest.mkdir();m.unpack_ipa(output,dest)
                 signed = dest/"Payload/Fixture.app"
                 for relative,original_info in original_infos.items():
-                    self.assertEqual((signed/relative).read_bytes(),original_info,relative)
+                    if relative in ["Info.plist","PlugIns/Share.appex/Info.plist","Companions/Companion.app/Info.plist"]:
+                        expected=plistlib.loads(original_info)
+                        expected["CFBundleIdentifier"]=target_id+expected["CFBundleIdentifier"][len(original_id):]
+                        if relative=="PlugIns/Share.appex/Info.plist":expected["NSExtension"]["ContainingApp"]=target_id
+                        self.assertEqual(plistlib.loads((signed/relative).read_bytes()),expected,relative)
+                    else:self.assertEqual((signed/relative).read_bytes(),original_info,relative)
                 real_run(["/usr/bin/codesign","--verify","--deep","--strict",signed],quiet=True)
                 self.assertEqual(m.entitlements_of(signed).get(m.MEMORY,False),memory)
                 expected_eva = original_eva and not personal_team and not eva_rejected
@@ -317,8 +338,8 @@ class OfflinePipelineTests(unittest.TestCase):
                 verification=json.loads(Path(complete["report"]).read_text())
                 self.assertEqual(len(verification["codeComponents"]),6)
                 self.assertEqual(verification["memoryScope"],"mainExecutableOnly")
-                self.assertEqual(verification["bundleIDPolicy"],"preserveOriginal")
-                self.assertTrue(all(p["bundleID"]==p["originalBundleID"] and p["bundleIDPreserved"] for p in verification["processes"]))
+                self.assertEqual(verification["bundleIDPolicy"],"selectedTeamSuffix")
+                self.assertTrue(all(p["bundleID"]==target_id+p["originalBundleID"][len(original_id):] and p["bundleIDVerified"] for p in verification["processes"]))
                 self.assertEqual(verification["processes"][0]["extendedVirtualAddressing"],expected_eva)
                 self.assertEqual(sum(p["memoryRequested"] for p in verification["processes"]),int(memory))
                 self.assertTrue(all(p["memoryVerified"]==(memory and p["mainExecutable"]) for p in verification["processes"]))
@@ -342,6 +363,7 @@ class OfflinePipelineTests(unittest.TestCase):
     def test_eva_fallback_cannot_drop_required_memory(self):self.scenario(True,original_eva=True,eva_rejected=True,main_memory_missing=True)
     def test_other_capability_failure_is_not_silently_retried(self):self.scenario(True,original_eva=True,unrelated_rejection=True)
     def test_attempted_bundle_id_override_cannot_provision_or_install(self):self.scenario(True,rename_attempt=True)
+    def test_existing_correct_team_suffix_is_not_duplicated(self):self.scenario(True,already_suffixed=True)
 
 
 if __name__ == "__main__":

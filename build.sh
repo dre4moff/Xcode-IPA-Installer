@@ -11,7 +11,7 @@ export COPYFILE_DISABLE=1
 cp "$project_dir/Resources/Info.plist" "$app/Contents/Info.plist"
 cp "$project_dir/Backend/installer.py" "$app/Contents/Resources/installer.py"
 xcrun swiftc -parse-as-library -swift-version 5 -target arm64-apple-macosx13.0 -O \
-    -module-cache-path "$build_temp/Modules" "$project_dir/Sources/App.swift" \
+    -module-cache-path "$build_temp/Modules" "$project_dir/Sources/App.swift" "$project_dir/Sources/TeamBundleIDPolicy.swift" \
     -o "$app/Contents/MacOS/XcodeIPAInstaller"
 xcrun swiftc -swift-version 5 -module-cache-path "$build_temp/Modules" \
     "$project_dir/Sources/Icon.swift" -o "$build_temp/icon-builder"

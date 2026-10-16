@@ -57,9 +57,11 @@ L’originale non viene modificato. In Download trovi l’IPA firmata e il rappo
 
 Xcode può richiedere l’accesso alla chiave di firma nel Portachiavi. Gestisci personalmente eventuali richieste di macOS. Se iOS richiede di autorizzare lo sviluppatore, controlla **Impostazioni → Generali → VPN e gestione dispositivo** sull’iPhone.
 
-Gli identificativi di app, estensioni e app incorporate restano **esattamente quelli contenuti nell’IPA**. In **Opzioni** puoi leggere l’identificativo principale, senza modificarlo. Non vengono aggiunti prefissi o suffissi, nemmeno quando cambi account o team.
+Il principale usa **l’ID originale più il Team ID dell’account selezionato**, per esempio `com.example.App.ABCDEFGHIJ`. Se il suffisso corretto è già presente, non viene duplicato. In **Opzioni** puoi leggere l’identificativo finale; cambiando team cambia anche il suffisso. Non vengono aggiunti prefissi o identificativi del Mac.
 
-Per aggiornare un’app esistente servono lo stesso Bundle ID e una firma compatibile. Se la copia sull’iPhone è stata rinominata da una versione precedente dell’installer o da un altro sideloader, l’ID originale dell’IPA potrebbe essere diverso: in quel caso iOS la considera un’altra app. La versione 1.0.4 non rinomina automaticamente i pacchetti per forzarne la sostituzione e non migra i dati tra identificativi diversi.
+Gli identificativi delle estensioni e delle app incorporate vengono aggiornati sotto quello del principale, conservando le relazioni: ad esempio `com.example.App.ABCDEFGHIJ.Widget`. Il backend verifica che ogni profilo e firma appartengano al team selezionato e non accetta un ID finale diverso da quello previsto. Il rapporto registra gli ID originali e quelli di firma.
+
+Per aggiornare un’app esistente servono lo stesso Bundle ID completo e una firma compatibile. Se la copia sull’iPhone usa già `<ID originale>.<Team ID>`, lo schema della versione 1.0.5 coincide. Un ID diverso, inclusi i prefissi delle vecchie versioni dell’installer, resta un’altra app: non vengono migrati i dati tra identificativi diversi.
 
 ## 5. Increased Memory Limit ed EVA
 
@@ -82,7 +84,7 @@ La gestione è generale per tutte le IPA. EVA non viene aggiunta a un’app che 
 | Nessun account / sessione scaduta | Completa l’accesso in Xcode → Settings → Apple Accounts e aggiorna l’elenco. |
 | Team assente | Associa il Team ID corretto da **Configura team…**; controlla se è un Personal Team. |
 | iPhone assente o non raggiungibile | Cavo, autorizzazione, sblocco, supporto iOS di Xcode e Window → Devices and Simulators. |
-| Bundle Identifier non disponibile | Apple non autorizza l’ID originale per questo team. L’installer interrompe la procedura e conserva l’ID senza rinominarlo. |
+| Bundle Identifier non disponibile | Apple non autorizza l’ID con il suffisso del team. L’installer interrompe la procedura senza generare identificativi alternativi. |
 | Limite di app con profili gratuiti raggiunto | Il messaggio mostra gli identificativi che occupano gli slot. Un aggiornamento deve avere lo stesso ID della copia esistente e una firma compatibile; un ID diverso occupa un nuovo slot. |
 | Extended Virtual Addressing non supportata | La versione 1.0.3 la esclude automaticamente per il team che non la autorizza, preservando la richiesta Increased Memory Limit. |
 | Increased Memory Limit non autorizzato | La procedura si ferma. Verifica team e profilo: l’app non dichiara riuscita la firma senza la capability richiesta. |
