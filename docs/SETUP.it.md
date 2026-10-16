@@ -77,7 +77,7 @@ Le due capability sono indipendenti:
 | EVA non disponibile per il team | La esclude automaticamente. I Personal Team vengono riconosciuti prima del provisioning; un rifiuto esplicito di Xcode su un altro team causa un unico nuovo tentativo senza EVA. |
 | Processi ausiliari | App incorporate, estensioni e JIT helper vengono firmati senza capability memoria. Framework e librerie vengono firmati come componenti del processo che li carica. |
 
-La gestione è generale per tutte le IPA. EVA non viene aggiunta a un’app che non la richiede. L’esclusione di EVA non disattiva Increased Memory Limit. Le altre capability originali restano richieste, salvo che tu disattivi esplicitamente **Mantieni le capability originali**. Nessuna di queste opzioni aggiunge RAM fisica.
+La gestione è generale per tutte le IPA. EVA non viene aggiunta a un’app che non la richiede. L’esclusione di EVA non disattiva Increased Memory Limit. Con **Mantieni le capability originali**, Xcode riceve la richiesta dei permessi originali. Un rifiuto esplicito di capability opzionali provoca un nuovo tentativo senza quei permessi, separatamente per app principale e ogni estensione. I permessi supportati restano richiesti e il profilo generato viene verificato prima della firma. Gli identificativi App Group esplicitamente segnalati come non disponibili per il nuovo team vengono rimossi singolarmente, conservando gli altri gruppi richiesti. Le esclusioni sono indicate nel log e nel rapporto; i servizi che ne dipendono, come iCloud, contenitori condivisi o push, potrebbero non funzionare. Memoria richiesta, identità di firma e verifiche di dispositivo/scadenza restano obbligatorie. Nessuna di queste opzioni aggiunge RAM fisica.
 
 ## Importare un certificato invece di usare Xcode
 
@@ -96,7 +96,7 @@ La chiave privata viene importata nel Portachiavi predefinito; la password non v
 | Limite di app con profili gratuiti raggiunto | Il messaggio mostra gli identificativi che occupano gli slot. Un aggiornamento deve avere lo stesso ID della copia esistente e una firma compatibile; un ID diverso occupa un nuovo slot. |
 | Extended Virtual Addressing non supportata | La versione 1.0.3 la esclude automaticamente per il team che non la autorizza, preservando la richiesta Increased Memory Limit. |
 | Increased Memory Limit non autorizzato | La procedura si ferma. Verifica team e profilo: l’app non dichiara riuscita la firma senza la capability richiesta. |
-| App Groups, iCloud o push non autorizzati | Il nuovo team deve possedere le autorizzazioni. Disattivare le capability originali può compromettere le funzioni che le usano. |
+| Il Personal Team non supporta alcune capability | Aggiorna alla versione 1.2.3 o successiva. Le capability opzionali esplicitamente rifiutate vengono escluse automaticamente, senza saltare estensioni o memoria richiesta. Le funzioni che dipendono dai permessi esclusi potrebbero non funzionare. |
 | IPA cifrata / componenti Watch | Questi pacchetti non sono supportati. |
 | App installata ma funzione assente | La firma non garantisce codice, backend remoto, Live Activities, Dynamic Island o servizi del team originale. Controlla il rapporto e i log. |
 

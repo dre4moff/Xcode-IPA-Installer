@@ -328,7 +328,7 @@ struct InstallerView: View {
                     Toggle(L10n.text("Keep original capabilities"), isOn: $model.preserveCapabilities).toggleStyle(.switch)
                     Text(L10n.text(model.usesImportedCertificate
                                    ? "Keeps capabilities authorized by each profile. Excluded capabilities may affect CarPlay, App Groups, iCloud, or push. Signing identity and the memory option remain required."
-                                   : "Requests the IPA’s capabilities from your team. Turning this off may affect App Groups, iCloud, or push notifications."))
+                                   : "Keeps capabilities supported by your Xcode team and profile. Unsupported optional capabilities are excluded and reported. Signing identity and the memory option remain required."))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if model.usesImportedCertificate && model.preserveCapabilities {
                         Toggle(L10n.text("Require all original capabilities"), isOn: $model.strictImportedCapabilities).toggleStyle(.switch)

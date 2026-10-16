@@ -35,7 +35,6 @@
 "Ready" = "Ready";
 "Ready to sign with the selected team." = "Ready to sign with the selected team.";
 "Refresh accounts and devices" = "Refresh accounts and devices";
-"Requests the IPA’s capabilities from your team. Turning this off may affect App Groups, iCloud, or push notifications." = "Requests the IPA’s capabilities from your team. Turning this off may affect App Groups, iCloud, or push notifications.";
 "Save" = "Save";
 "Saved to Downloads" = "Saved to Downloads";
 "Set up team…" = "Set up team…";
@@ -93,3 +92,4 @@
 "Stop if any original capability is unsupported, instead of excluding it." = "Stop if any original capability is unsupported, instead of excluding it.";
 "Original Bundle IDs are preserved for the app and every extension. Profiles must authorize those IDs; the app never renames them to fit a profile." = "Original Bundle IDs are preserved for the app and every extension. Profiles must authorize those IDs; the app never renames them to fit a profile.";
 "Original Bundle IDs are preserved for the app and every extension. The signing App ID comes from the imported profile, independently of the bundle’s installation identifier." = "Original Bundle IDs are preserved for the app and every extension. The signing App ID comes from the imported profile, independently of the bundle’s installation identifier.";
+"Keeps capabilities supported by your Xcode team and profile. Unsupported optional capabilities are excluded and reported. Signing identity and the memory option remain required." = "Keeps capabilities supported by your Xcode team and profile. Unsupported optional capabilities are excluded and reported. Signing identity and the memory option remain required.";

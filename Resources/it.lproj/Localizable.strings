@@ -35,7 +35,6 @@
 "Ready" = "Pronta";
 "Ready to sign with the selected team." = "Pronta per la firma con il team selezionato.";
 "Refresh accounts and devices" = "Aggiorna account e dispositivi";
-"Requests the IPA’s capabilities from your team. Turning this off may affect App Groups, iCloud, or push notifications." = "Richiede al team le capability dell’IPA. Disattivandole puoi compromettere App Groups, iCloud o notifiche push.";
 "Save" = "Salva";
 "Saved to Downloads" = "Salvata in Download";
 "Set up team…" = "Configura team…";
@@ -93,3 +92,4 @@
 "Stop if any original capability is unsupported, instead of excluding it." = "Interrompe la firma se una capability originale non è supportata, invece di escluderla.";
 "Original Bundle IDs are preserved for the app and every extension. Profiles must authorize those IDs; the app never renames them to fit a profile." = "I Bundle ID originali vengono conservati per l’app e tutte le estensioni. I profili devono autorizzarli; l’app non li rinomina per adattarli al profilo.";
 "Original Bundle IDs are preserved for the app and every extension. The signing App ID comes from the imported profile, independently of the bundle’s installation identifier." = "I Bundle ID originali vengono conservati per l’app e tutte le estensioni. L’App ID della firma deriva dal profilo importato, separatamente dall’identificativo di installazione del bundle.";
+"Keeps capabilities supported by your Xcode team and profile. Unsupported optional capabilities are excluded and reported. Signing identity and the memory option remain required." = "Mantiene le capability supportate dal team Xcode e dal profilo. Quelle opzionali non supportate vengono escluse e segnalate. L’identità di firma e l’opzione memoria restano obbligatorie.";

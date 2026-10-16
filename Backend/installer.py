@@ -508,6 +508,78 @@ def eva_unavailable(error):
     return named and refused
 
 
+def xcode_capability_keys(env):
+    """Resolve Xcode's diagnostic names, including on older Xcode installations.
+
+    The installed Xcode catalog supplies new capabilities and nested settings.
+    The small fallback covers common diagnostics when that catalog is absent.
+    This maps names only: actual team availability is decided by Xcode/Apple.
+    """
+    catalog = {
+        "iCloud": {"com.apple.developer." + key for key in (
+            "icloud-container-identifiers", "icloud-container-development-container-identifiers",
+            "icloud-services", "icloud-container-environment", "ubiquity-container-identifiers",
+            "ubiquity-kvstore-identifier")},
+        "Access Wi-Fi Information": {"com.apple.developer.networking.wifi-info"},
+        "Siri": {"com.apple.developer.siri"},
+        "Communication Notifications": {"com.apple.developer.usernotifications.communication"},
+        "Declared Age Range": {"com.apple.developer.declared-age-range"},
+        "Associated Domains": {"com.apple.developer.associated-domains"},
+        "Group Activities": {"com.apple.developer.group-session"},
+        "Multicast Networking": {"com.apple.developer.networking.multicast"},
+        "Sign In with Apple": {"com.apple.developer.applesignin"},
+        "StoreKit External Purchases or Offers": {"com.apple.developer.storekit.custom-purchase-link.allowed-regions"},
+        "Push Notifications": {"aps-environment", "com.apple.developer.aps-environment"},
+        "App Groups": {"com.apple.security.application-groups"},
+        "Extended Virtual Addressing": {EVA},
+        "Increased Memory Limit": {MEMORY},
+    }
+    def keys(value):
+        result = set()
+        if isinstance(value, dict):
+            if isinstance(value.get("profileKey"), str): result.add(value["profileKey"])
+            for child in value.values(): result.update(keys(child))
+        elif isinstance(value, list):
+            for child in value: result.update(keys(child))
+        return result
+    path = Path(env.get("DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer")).parent / "SharedFrameworks/DVTPortal.framework/Resources/DVTPortalCachedPortalCapabilities.json"
+    try:
+        for item in json.loads(path.read_text()).get("data", []):
+            attributes = item.get("attributes", {})
+            name = attributes.get("name")
+            if isinstance(name, str): catalog.setdefault(name, set()).update(keys(attributes))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass  # Older Xcode versions need not ship the portal catalog.
+    return catalog
+
+
+def refused_xcode_capabilities(error, requested, catalog):
+    """Only explicit entitlement/capability refusals permit a bounded retry.
+
+    Authentication, device limits, identity errors and generic missing-profile
+    messages never authorize stripping capabilities. Required memory is fatal.
+    """
+    refused = set()
+    for line in str(error).splitlines():
+        for clause in re.findall(r"(?:do not|does not|doesn't) support (?:the )?(.+) capabilit(?:y|ies)\b", line, re.I):
+            matched = []
+            for name in sorted(catalog, key=len, reverse=True):
+                for match in re.finditer(r"(?<!\w)" + re.escape(name) + r"(?!\w)", clause, re.I):
+                    if not any(match.start() < end and start < match.end() for start, end in matched):
+                        refused.update(catalog[name]); matched.append(match.span())
+        refused.update(re.findall(r"\bEntitlement ([\w.-]+) not found and could not be included in profile", line, re.I))
+        refused.update(re.findall(r"doesn't include the ([\w.-]+) entitlement\b", line, re.I))
+    refused.intersection_update(requested)
+    protected = {MEMORY, "application-identifier", "com.apple.developer.team-identifier", "get-task-allow", "keychain-access-groups"}
+    return None if refused.intersection(protected) else refused
+
+
+def unavailable_xcode_groups(error, requested):
+    """An original team's group may be unavailable to the new signing team."""
+    identifiers = re.findall(r"(?:Application|App) Group with Identifier ['\"]([^'\"]+)['\"] is not available\b", str(error), re.I)
+    return set(identifiers).intersection(requested.get("com.apple.security.application-groups", []))
+
+
 def assert_eva_policy(actual, requested):
     if actual.get(EVA) != requested.get(EVA):
         raise InstallerError(tr('The final signature does not match Extended Virtual Addressing availability for the selected team.'))
@@ -1007,6 +1079,7 @@ def sign_and_install(config):
         if personal_team:
             emit("log", message=tr('Extended Virtual Addressing: excluded, unavailable for Personal Teams. Increased Memory Limit stays independent.'))
         if not external:
+            capability_keys = xcode_capability_keys(env)
             project = write_project(work / "Provisioning", units, team)
             for i, unit in enumerate(units):
                 emit("phase", message=tr('Xcode: profile ') + unit["path"].name, progress=0.12 + 0.50 * i / len(units))
@@ -1017,18 +1090,34 @@ def sign_and_install(config):
                         "CLANG_MODULE_CACHE_PATH=" + str(work / "Modules"), "MODULE_CACHE_DIR=" + str(work / "Modules"),
                         "SDK_STAT_CACHE_DIR=" + str(work / "SDKStatCaches"), "SHARED_PRECOMPS_DIR=" + str(work / "Precompiled"),
                         "DEVELOPMENT_TEAM=" + team, "build"]
-                try:
-                    run(args, env=env, log=log, timeout=600)
-                except InstallerError as error:
-                    if EVA not in unit["requested"] or not eva_unavailable(error):
-                        raise
-                    # Capability availability belongs to the selected team, not the IPA name.
-                    # Change only EVA; the required memory entitlement and all other capabilities stay.
-                    unit["requested"].pop(EVA)
-                    unit["eva_policy"] = "unavailableForTeam"
-                    (project.parent / (unit["target"] + ".entitlements")).write_bytes(plistlib.dumps(unit["requested"]))
-                    emit("log", message=tr('Xcode did not authorize Extended Virtual Addressing for this team. Retrying without EVA, keeping Increased Memory Limit and all other requested capabilities.'))
-                    run(args, env=env, log=log, timeout=600)
+                unit["excluded_capabilities"] = []
+                unit["excluded_capability_values"] = {}
+                # Every retry removes a refused key or an unavailable group value.
+                # No blanket stripping or retry of login/identity/profile failures.
+                retry_budget = len(unit["requested"]) + sum(len(value) for value in unit["requested"].values() if isinstance(value, list)) + 1
+                for attempt in range(retry_budget):
+                    try:
+                        run(args, env=env, log=log, timeout=600)
+                        break
+                    except InstallerError as error:
+                        refused = refused_xcode_capabilities(error, unit["requested"], capability_keys)
+                        groups = unavailable_xcode_groups(error, unit["requested"])
+                        if refused is None or (not refused and not groups):
+                            raise
+                        if groups:
+                            key = "com.apple.security.application-groups"
+                            unit["requested"][key] = [group for group in unit["requested"][key] if group not in groups]
+                            unit["excluded_capability_values"].setdefault(key, []).extend(sorted(groups))
+                            unit["excluded_capabilities"].append(key)
+                            if not unit["requested"][key]: unit["requested"].pop(key)
+                            emit("log", message=tr('Excluded unavailable App Groups for ') + unit["path"].name + ": " + ", ".join(sorted(groups)))
+                        if EVA in refused: unit["eva_policy"] = "unavailableForTeam"
+                        for key in refused: unit["requested"].pop(key, None)
+                        unit["excluded_capabilities"].extend(sorted(refused))
+                        (project.parent / (unit["target"] + ".entitlements")).write_bytes(plistlib.dumps(unit["requested"]))
+                        if refused:
+                            emit("log", message=tr('Excluded unsupported capabilities for ') + unit["path"].name + ": " + ", ".join(sorted(refused)))
+                        emit("log", message=tr('Retrying Xcode provisioning with the remaining capabilities. The selected signing team and required Increased Memory Limit are unchanged.'))
                 product = work / "Products/Debug-iphoneos" / unit["product"]
                 profile_path = product / "embedded.mobileprovision"
                 if not profile_path.exists():
@@ -1043,6 +1132,14 @@ def sign_and_install(config):
                 unit["effective"] = entitlements_of(product)
                 if not unit["effective"]:
                     raise InstallerError(tr('Xcode did not generate signing entitlements.'))
+                supported, excluded = compatible_capabilities(profile, unit["requested"], team, unit["new_id"])
+                for key in unit["requested"]: unit["effective"].pop(key, None)
+                unit["effective"].update(supported)
+                unit["requested"] = supported
+                unit["excluded_capabilities"].extend(excluded)
+                if EVA in excluded: unit["eva_policy"] = "unavailableForTeam"
+                if excluded:
+                    emit("log", message=tr('Excluded unsupported capabilities for ') + unit["path"].name + ": " + ", ".join(excluded))
                 if not unit["is_main"]:
                     for key in MEMORY_ENTITLEMENTS: unit["effective"].pop(key, None)
                 elif not unit["memory"]:
@@ -1095,6 +1192,7 @@ def sign_and_install(config):
             memoryRequested=memory, memoryScope="mainExecutableOnly", extendedVirtualAddressingPolicy="importedProfile" if external else "automaticForTeam",
             signingMode="imported" if external else "xcode", certificateSHA1=certificate["id"] if external else None,
             importedCapabilityPolicy=("strict" if config.get("strictImportedCapabilities") else "authorizedOnly") if external else None,
+            xcodeCapabilityPolicy=None if external else "authorizedOnly",
             bundleIDPolicy="originalIdentifiers" if external else "selectedTeamSuffix",
             codeComponents=[dict(path=str(p.relative_to(root.parent)), kind="app/extension" if unit else "library/bundle", signatureVerified=True) for p,unit in plan],
             processes=[dict(bundleID=u["new_id"], originalBundleID=u["old_id"], bundleIDVerified=True,
@@ -1105,7 +1203,8 @@ def sign_and_install(config):
                             profileUUID=u["profile_data"].get("UUID"),
                             applicationIdentifier=u["app_identifier"],
                             applicationIdentifierPolicy="importedProfile" if external else "xcodeBundleDerived",
-                            excludedUnsupportedCapabilities=u.get("excluded_capabilities", []),
+                            excludedUnsupportedCapabilities=sorted(set(u.get("excluded_capabilities", []))),
+                            excludedCapabilityValues=u.get("excluded_capability_values", {}),
                             excludedOriginalMemoryCapabilities=sorted(k for k in MEMORY_ENTITLEMENTS if k in u["original"] and k not in u["requested"]),
                             requestedCapabilities=sorted(u["requested"]), supportsLiveActivities=u["info"].get("NSSupportsLiveActivities"),
                             extensionPoint=u["info"].get("NSExtension",{}).get("NSExtensionPointIdentifier")) for u in units]), indent=2, ensure_ascii=False)+"\n")

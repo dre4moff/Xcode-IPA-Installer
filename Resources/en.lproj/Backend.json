@@ -105,5 +105,7 @@
   ". Import a matching or wildcard profile. Original Bundle IDs are never changed in imported-certificate mode.": ". Import a matching or wildcard profile. Original Bundle IDs are never changed in imported-certificate mode.",
   "Imported signing App ID: ": "Imported signing App ID: ",
   "; original Bundle ID preserved: ": "; original Bundle ID preserved: ",
-  ". Import a valid profile for the same certificate and selected device. ": ". Import a valid profile for the same certificate and selected device. "
+  ". Import a valid profile for the same certificate and selected device. ": ". Import a valid profile for the same certificate and selected device. ",
+  "Retrying Xcode provisioning with the remaining capabilities. The selected signing team and required Increased Memory Limit are unchanged.": "Retrying Xcode provisioning with the remaining capabilities. The selected signing team and required Increased Memory Limit are unchanged.",
+  "Excluded unavailable App Groups for ": "Excluded unavailable App Groups for "
 }

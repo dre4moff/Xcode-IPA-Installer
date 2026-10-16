@@ -85,7 +85,7 @@ Handle any macOS Keychain request personally. If iOS asks to trust the developer
 | EVA unavailable | Excludes it for Personal Teams; an explicit refusal on another team causes one retry without EVA. Increased Memory Limit remains requested. |
 | Auxiliary components | Embedded apps, extensions, and JIT helpers are signed without memory capabilities. Frameworks/libraries run within the host process. |
 
-The policy applies to all IPAs. EVA is not added when the original app does not request it. Other capabilities remain requested unless you disable **Keep original capabilities**. This may affect App Groups, iCloud, or push. These options do not add physical RAM.
+The policy applies to all IPAs. EVA is not added when the original app does not request it. With **Keep original capabilities**, Xcode is asked to enable the original permissions. An explicit refusal of optional capabilities triggers a retry without those permissions, for the main app and each extension independently. Supported permissions remain requested and the generated profile is checked before signing. App Group identifiers explicitly reported as unavailable to the new team are removed individually, preserving other requested groups. Exclusions appear in the log and report; dependent services such as iCloud, shared containers, or push may not work. Required memory, signing identity, and device/expiry checks remain mandatory. These options do not add physical RAM.
 
 ## 6. Language and appearance
 
@@ -109,7 +109,7 @@ The private key enters your macOS default Keychain; the password is not saved. A
 | Bundle Identifier unavailable | Apple has not authorized that team-suffixed ID. The app stops without generating alternate IDs. |
 | Free-profile app limit | The full error lists occupied identifiers. Updating requires the existing app’s complete ID and compatible signing. A different ID uses another slot. |
 | Increased Memory Limit not authorized | Signing stops instead of silently dropping the requested entitlement. Check the selected team/profile. |
-| App Groups, iCloud, or push denied | The new team needs those permissions. Disabling original capabilities may break dependent features. |
+| Personal Team does not support capabilities | Update to version 1.2.3 or later. Explicitly refused optional capabilities are excluded automatically, without skipping extensions or required memory. Features requiring excluded permissions may not work. |
 | Encrypted IPA / Watch component | These packages are unsupported. |
 | App installs but a feature fails | Signing cannot guarantee app code, remote services, Live Activities, Dynamic Island, or JIT. Inspect logs and the report. |
 

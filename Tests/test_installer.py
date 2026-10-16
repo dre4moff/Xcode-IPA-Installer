@@ -33,6 +33,47 @@ def profile(bundle_id="local.fixture.app", memory=True):
 
 
 class CoreTests(unittest.TestCase):
+    def test_xcode_refusal_resolves_the_reported_personal_team_capabilities(self):
+        catalog=m.xcode_capability_keys({"DEVELOPER_DIR":"/nonexistent/Contents/Developer"})
+        rejected=["iCloud", "Access Wi-Fi Information", "Siri", "Communication Notifications",
+                  "Declared Age Range", "Associated Domains", "Group Activities", "Multicast Networking",
+                  "Sign In with Apple", "StoreKit External Purchases or Offers", "Push Notifications"]
+        keys=set().union(*(catalog[name] for name in rejected))
+        requested=dict.fromkeys(keys|{m.MEMORY,"keychain-access-groups","com.apple.security.application-groups"},True)
+        error='error: Personal development teams, including "Fixture", do not support the '+", ".join(rejected)+' capabilities.\nerror: No profiles were found.'
+        self.assertEqual(m.refused_xcode_capabilities(error,requested,catalog),keys)
+        self.assertEqual(m.refused_xcode_capabilities("Entitlement com.example.new-capability not found and could not be included in profile.",{"com.example.new-capability":True},catalog),{"com.example.new-capability"})
+
+    def test_xcode_refusal_keeps_required_memory_and_never_retries_auth_or_generic_failures(self):
+        catalog=m.xcode_capability_keys({"DEVELOPER_DIR":"/nonexistent/Contents/Developer"})
+        requested={m.MEMORY:True,m.EVA:True,"com.apple.developer.siri":True}
+        for message in ['Personal development teams do not support the Increased Memory Limit and Siri capabilities.',
+                        'Entitlement '+m.MEMORY+' not found and could not be included in profile.',
+                        'Authentication failed. No profiles for the requested bundle were found.',
+                        'The certificate authorized by the profile has no available signing key.',
+                        'This device has reached the maximum number of installed apps using a free developer profile.']:
+            self.assertFalse(m.refused_xcode_capabilities(message,requested,catalog))
+
+    def test_xcode_catalog_reads_new_capabilities_and_nested_entitlements(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            contents=Path(temporary)/"Contents"
+            path=contents/"SharedFrameworks/DVTPortal.framework/Resources/DVTPortalCachedPortalCapabilities.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"data":[{"attributes":{"name":"Future Capability","settings":[{"entitlements":[{"profileKey":"com.example.future"}]}]}}]}))
+            catalog=m.xcode_capability_keys({"DEVELOPER_DIR":str(contents/"Developer")})
+            self.assertEqual(m.refused_xcode_capabilities("The team does not support the Future Capability capability.",{"com.example.future":True,m.MEMORY:True},catalog),{"com.example.future"})
+
+    def test_xcode_group_conflict_is_specific_to_an_explicitly_unavailable_requested_identifier(self):
+        requested={"com.apple.security.application-groups":["group.original", "group.available"]}
+        message="Communication with Apple failed. An Application Group with Identifier 'group.original' is not available. Please enter a different string."
+        self.assertEqual(m.unavailable_xcode_groups(message,requested),{"group.original"})
+        self.assertFalse(m.unavailable_xcode_groups("Communication with Apple failed. Authentication failed.",requested))
+        self.assertFalse(m.unavailable_xcode_groups(message,{"com.apple.security.application-groups":["group.available"]}))
+
+    def test_xcode_longer_capability_name_does_not_remove_a_supported_parent_capability(self):
+        catalog={"iCloud":{"com.example.cloud"},"iCloud Extended Share Access":{"com.example.cloud.extended"}}
+        self.assertEqual(m.refused_xcode_capabilities("The team doesn't support the iCloud Extended Share Access capability.",dict.fromkeys(["com.example.cloud","com.example.cloud.extended"],True),catalog),{"com.example.cloud.extended"})
+
     def test_backend_localization_is_complete_and_defaults_to_english(self):
         english=m.load_translations("en")
         italian=m.load_translations("it")
@@ -261,7 +302,8 @@ class OfflinePipelineTests(unittest.TestCase):
     """Real local ad-hoc signing/ZIP verification; Apple provisioning/install always intercepted."""
     def scenario(self, memory, wrong_team=False, main_memory_missing=False, original_eva=False,
                  personal_team=False, eva_rejected=False, unrelated_rejection=False, rename_attempt=False,
-                 already_suffixed=False, external=False, debug=False, wildcard=False, missing_extension=False, unsupported_capability=False, strict_imported=False, fixed_profile=False, original_app_id="local.fixture.app"):
+                 already_suffixed=False, external=False, debug=False, wildcard=False, missing_extension=False, unsupported_capability=False, strict_imported=False, fixed_profile=False, original_app_id="local.fixture.app",
+                 xcode_refusals=False, profile_omits_optional=False, required_refusal=False, group_conflict=False):
         fixture = Path(os.environ["XCODE_IPA_FIXTURES"])
         events, commands = [], []
         real_run = m.run
@@ -299,6 +341,14 @@ class OfflinePipelineTests(unittest.TestCase):
                 shutil.copyfile(library,container/"BinaryCore")
                 (container/"Info.plist").write_bytes(plistlib.dumps(dict(CFBundleExecutable="BinaryCore",CFBundleIdentifier="local.fixture."+container.stem,CFBundlePackageType="FMWK",CFBundleVersion="1")))
             loose=app/"Assets/LooseLibrary";loose.parent.mkdir();shutil.copyfile(library,loose)
+            rejected_keys={"com.apple.developer.siri", "com.apple.developer.icloud-services", "aps-environment"}
+            if xcode_refusals or profile_omits_optional or required_refusal or group_conflict:
+                original_ent={"com.apple.security.application-groups":["group.fixture"],
+                              "com.apple.developer.siri":True,"com.apple.developer.icloud-services":["CloudKit"],"aps-environment":"production"}
+                if group_conflict:original_ent["com.apple.security.application-groups"].append("group.unavailable")
+                entpath=temp/"capabilities.entitlements";entpath.write_bytes(plistlib.dumps(original_ent))
+                for bundle in [extension,companion,app]:
+                    real_run(["/usr/bin/codesign","--force","--sign","-","--entitlements",entpath,"--timestamp=none",bundle],quiet=True)
             if original_eva or unsupported_capability:
                 entpath = temp/"original.entitlements"
                 original_ent={m.MEMORY: True, "com.apple.security.application-groups": ["group.fixture"]}
@@ -319,6 +369,12 @@ class OfflinePipelineTests(unittest.TestCase):
                     i = int(target.replace("Provision", ""))
                     requested=plistlib.loads((project.parent/(target+".entitlements")).read_bytes())
                     if personal_team: self.assertNotIn(m.EVA, requested)
+                    if required_refusal:
+                        raise m.InstallerError("Personal development teams do not support the Increased Memory Limit and Siri capabilities.")
+                    if xcode_refusals and rejected_keys.intersection(requested):
+                        raise m.InstallerError('error: Personal development teams, including "Fixture", do not support the Siri, iCloud, and Push Notifications capabilities.\nerror: No profiles were found.')
+                    if group_conflict and "group.unavailable" in requested.get("com.apple.security.application-groups",[]):
+                        raise m.InstallerError("Communication with Apple failed. An Application Group with Identifier 'group.unavailable' is not available. Please enter a different string.")
                     if i==0 and unrelated_rejection: raise m.InstallerError("App Groups are not supported for this team.")
                     if i==0 and eva_rejected and m.EVA in requested:
                         self.assertEqual(requested.get(m.MEMORY), memory)
@@ -338,6 +394,8 @@ class OfflinePipelineTests(unittest.TestCase):
                         raise m.InstallerError("Entitlement com.apple.developer.kernel.increased-memory-limit not found and could not be included in profile.")
                     for key,value in requested.items():
                         prof["Entitlements"][key]=[v.replace("$(AppIdentifierPrefix)",TEAM+".") for v in value] if isinstance(value,list) else value
+                    if profile_omits_optional:
+                        for key in rejected_keys: prof["Entitlements"].pop(key,None)
                     if is_extension:prof["Entitlements"].pop(m.MEMORY,None)
                     if main_memory_missing and i==0:prof["Entitlements"].pop(m.MEMORY,None)
                     if wrong_team: prof["TeamIdentifier"] = [OTHER]
@@ -368,10 +426,11 @@ class OfflinePipelineTests(unittest.TestCase):
                     context_patch=patch.object(m,"external_context",return_value=context)
                     context_patch.start();self.addCleanup(context_patch.stop)
                 if rename_attempt:config["bundleID"]="local.fixture.app."+OTHER
-                if wrong_team or main_memory_missing or unrelated_rejection or rename_attempt or (unsupported_capability and strict_imported):
+                if wrong_team or main_memory_missing or unrelated_rejection or rename_attempt or required_refusal or (unsupported_capability and strict_imported):
                     with self.assertRaises(m.InstallerError): m.sign_and_install(config)
                     self.assertFalse(any("devicectl" in c for c in commands))
                     if unrelated_rejection: self.assertEqual(sum("xcodebuild" in c for c in commands), 1)
+                    if required_refusal:self.assertEqual(sum("xcodebuild" in c for c in commands),1)
                     if rename_attempt:self.assertFalse(any("xcodebuild" in c for c in commands))
                     return
                 m.sign_and_install(config)
@@ -390,9 +449,9 @@ class OfflinePipelineTests(unittest.TestCase):
                 self.assertEqual(m.entitlements_of(signed).get(m.MEMORY,False),memory)
                 expected_eva = original_eva and not personal_team and not eva_rejected
                 self.assertEqual(m.entitlements_of(signed).get(m.EVA,False),expected_eva)
-                if original_eva:
+                if original_eva or xcode_refusals or profile_omits_optional or group_conflict:
                     self.assertEqual(m.entitlements_of(signed)["com.apple.security.application-groups"], ["group.fixture"])
-                self.assertEqual(sum("xcodebuild" in c for c in commands), 0 if external else 4 if eva_rejected else 3)
+                self.assertEqual(sum("xcodebuild" in c for c in commands), 0 if external else 9 if xcode_refusals and group_conflict else 6 if xcode_refusals or group_conflict else 4 if eva_rejected else 3)
                 if external:
                     for process in [signed,signed/"PlugIns/Share.appex",signed/"Companions/Companion.app"]:
                         self.assertEqual(m.entitlements_of(process).get("get-task-allow"),debug)
@@ -404,6 +463,14 @@ class OfflinePipelineTests(unittest.TestCase):
                 widget_info=plistlib.loads((signed/"PlugIns/Share.appex/Info.plist").read_bytes())
                 self.assertEqual(widget_info["NSExtension"]["NSExtensionPointIdentifier"],"com.apple.widgetkit-extension")
                 verification=json.loads(Path(complete["report"]).read_text())
+                if xcode_refusals or profile_omits_optional:
+                    self.assertEqual(verification["xcodeCapabilityPolicy"],"authorizedOnly")
+                    for process in verification["processes"]:
+                        self.assertEqual(set(process["excludedUnsupportedCapabilities"]),rejected_keys|({"com.apple.security.application-groups"} if group_conflict else set()))
+                        self.assertIn("com.apple.security.application-groups",process["requestedCapabilities"])
+                if group_conflict:
+                    for process in verification["processes"]:
+                        self.assertEqual(process["excludedCapabilityValues"],{"com.apple.security.application-groups":["group.unavailable"]})
                 self.assertEqual(len(verification["codeComponents"]),6)
                 if unsupported_capability:
                     self.assertNotIn("com.apple.developer.carplay-audio",m.entitlements_of(signed))
@@ -441,6 +508,16 @@ class OfflinePipelineTests(unittest.TestCase):
     def test_other_capability_failure_is_not_silently_retried(self):self.scenario(True,original_eva=True,unrelated_rejection=True)
     def test_attempted_bundle_id_override_cannot_provision_or_install(self):self.scenario(True,rename_attempt=True)
     def test_existing_correct_team_suffix_is_not_duplicated(self):self.scenario(True,already_suffixed=True)
+    def test_personal_team_refusal_filters_only_denied_capabilities_for_every_process(self):
+        self.scenario(True,personal_team=True,xcode_refusals=True)
+    def test_paid_team_refusal_uses_the_same_general_capability_policy(self):
+        self.scenario(False,xcode_refusals=True)
+    def test_generated_profile_filters_optional_permissions_and_preserves_authorized_app_groups(self):
+        self.scenario(True,profile_omits_optional=True)
+    def test_capability_retry_cannot_mask_required_memory_refusal(self):
+        self.scenario(True,personal_team=True,required_refusal=True)
+    def test_sequential_refusals_keep_available_app_groups_and_every_code_component(self):
+        self.scenario(True,personal_team=True,xcode_refusals=True,group_conflict=True)
 
     def test_imported_distribution_signs_every_component_with_exact_profiles(self):self.scenario(True,external=True,original_eva=True)
     def test_imported_development_keeps_debugging_for_all_processes(self):self.scenario(True,external=True,debug=True)
