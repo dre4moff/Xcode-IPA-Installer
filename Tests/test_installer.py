@@ -11,7 +11,7 @@ import stat
 import struct
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 import zipfile
 
 SPEC = importlib.util.spec_from_file_location("installer", Path(__file__).parents[1] / "Backend/installer.py")
@@ -59,37 +59,25 @@ class CoreTests(unittest.TestCase):
         for key in m.MEMORY_ENTITLEMENTS:
             with self.subTest(key=key),self.assertRaises(m.InstallerError):m.assert_memory_scope({key:True},False)
 
-    def test_installation_namespace_is_stable_and_private(self):
-        with tempfile.TemporaryDirectory() as temp,patch.object(m,"SUPPORT",Path(temp)):
-            first=m.installation_namespace()
-            self.assertEqual(first,m.installation_namespace())
-            path=Path(temp)/"installation-id.txt"
-            self.assertEqual(path.stat().st_mode & 0o777,0o600)
-            self.assertEqual(list(Path(temp).iterdir()),[path])
-            path.write_text("invalid")
-            with self.assertRaises(m.InstallerError):m.installation_namespace()
-            self.assertEqual(path.read_text(),"invalid")
+    def test_original_identifiers_are_preserved_exactly(self):
+        identifiers=["com.Example.App", "com.Example.App.Share", "other.vendor.Companion"]
+        self.assertEqual(m.original_bundle_ids(identifiers),{value:value for value in identifiers})
 
-    def test_default_bundle_id_is_independent_stable_team_scoped(self):
-        namespace="1234567890abcdef"*2
-        value=m.default_bundle_id("com.example.largeapp",TEAM,namespace)
-        self.assertFalse(value.startswith("com.example."))
-        self.assertTrue(value.startswith("local.xcodeipa.t"+TEAM.lower()+"."))
-        self.assertTrue(m.valid_bundle_id(value))
-        self.assertEqual(value,m.default_bundle_id("com.example.largeapp",TEAM,namespace))
-        self.assertNotEqual(value,m.default_bundle_id("com.example.largeapp",OTHER,namespace))
-        self.assertNotEqual(value,m.default_bundle_id("other.vendor.largeapp",TEAM,namespace))
-        self.assertNotEqual(value,m.default_bundle_id("com.example.largeapp",TEAM,"f"*32))
-        self.assertTrue(m.valid_bundle_id(m.default_bundle_id("a."+"z"*250,TEAM,namespace)))
-        mapping=m.bundle_mapping(["com.example.largeapp","com.example.largeapp.widget"],"com.example.largeapp",value)
-        self.assertEqual(mapping["com.example.largeapp.widget"],value+".widget")
+    def test_install_error_keeps_free_profile_limit_and_occupied_identifiers(self):
+        output=b'ERROR: Failed to install the app on the device.\nNSLocalizedRecoverySuggestion = This device has reached the maximum number of installed apps using a free developer profile: {( "ABCDEFGHIJ.com.example.ExistingApp" )}\nFunctionName = -[MIFreeProfileValidatedAppTracker _onQueue_addReferenceForApplicationIdentifier:bundle:error:]'
+        process=Mock(returncode=1)
+        process.communicate.return_value=(output,None)
+        with patch.object(m.subprocess,"Popen",return_value=process),self.assertRaises(m.InstallerError) as caught:
+            m.run(["offline-install-error"])
+        self.assertIn("limite di app",str(caught.exception))
+        self.assertIn("com.example.ExistingApp",str(caught.exception))
 
     def test_widget_metadata_and_shared_keychain_relationship_are_preserved(self):
-        mapping={"original.app":"local.new.app","original.app.widget":"local.new.app.widget"}
+        mapping=m.original_bundle_ids(["original.app","original.app.widget"])
         group={"application-identifier":OTHER+".original.app","keychain-access-groups":[OTHER+".original.app.shared"],
                "com.apple.security.application-groups":["group.original.shared"]}
-        main=m.requested_entitlements(group,mapping,TEAM,"local.new.app",True)
-        widget=m.requested_entitlements(group,mapping,TEAM,"local.new.app.widget",True)
+        main=m.requested_entitlements(group,mapping,TEAM,"original.app",True)
+        widget=m.requested_entitlements(group,mapping,TEAM,"original.app.widget",True)
         self.assertEqual(main["keychain-access-groups"],widget["keychain-access-groups"])
         self.assertEqual(main["com.apple.security.application-groups"],["group.original.shared"])
         info={"CFBundleIdentifier":"original.app.widget","NSSupportsLiveActivities":True,
@@ -97,7 +85,7 @@ class CoreTests(unittest.TestCase):
         updated=m.rewrite(info,mapping)
         self.assertIs(updated["NSSupportsLiveActivities"],True)
         self.assertEqual(updated["NSExtension"]["NSExtensionPointIdentifier"],"com.apple.widgetkit-extension")
-        self.assertEqual(updated["NSExtension"]["ContainingApp"],"local.new.app")
+        self.assertEqual(updated["NSExtension"]["ContainingApp"],"original.app")
 
     def test_missing_or_dropped_capability_blocks_signing(self):
         requested={m.MEMORY:True,"com.apple.security.application-groups":["group.fixture"]}
@@ -144,12 +132,10 @@ class CoreTests(unittest.TestCase):
         preserved = m.requested_entitlements(original, {}, TEAM, "local.fixture.app", False, preserve=True)
         self.assertEqual(preserved["aps-environment"], "production")
 
-    def test_bundle_mapping_updates_extensions_and_checks_collisions(self):
-        values = m.bundle_mapping(["old.app", "old.app.share", "vendor.widget"], "old.app", "new.app")
-        self.assertEqual(values["old.app.share"], "new.app.share")
-        self.assertEqual(values["vendor.widget"], "new.app.vendor.widget")
-        with self.assertRaises(m.InstallerError):
-            m.bundle_mapping(["old.app", "old.app"], "old.app", "new.app")
+    def test_invalid_or_duplicate_original_ids_fail_without_renaming(self):
+        for ids in [["old.app","old.app"],["old.App","old.app"],["invalid"],["a."+"z"*254]]:
+            with self.subTest(ids=ids),self.assertRaises(m.InstallerError):
+                m.original_bundle_ids(ids)
 
     def test_profile_guards_team_device_memory_expiry_identifier(self):
         good = profile()
@@ -220,7 +206,7 @@ class CoreTests(unittest.TestCase):
 class OfflinePipelineTests(unittest.TestCase):
     """Real local ad-hoc signing/ZIP verification; Apple provisioning/install always intercepted."""
     def scenario(self, memory, wrong_team=False, main_memory_missing=False, original_eva=False,
-                 personal_team=False, eva_rejected=False, unrelated_rejection=False):
+                 personal_team=False, eva_rejected=False, unrelated_rejection=False, rename_attempt=False):
         fixture = Path(os.environ["XCODE_IPA_FIXTURES"])
         events, commands = [], []
         real_run = m.run
@@ -247,6 +233,7 @@ class OfflinePipelineTests(unittest.TestCase):
                 entpath.write_bytes(plistlib.dumps({m.EVA: True, m.MEMORY: True, "com.apple.security.application-groups": ["group.fixture"]}))
                 real_run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements", entpath, "--timestamp=none", app], quiet=True)
             source = temp/"input.ipa"; m.pack_ipa(app, source)
+            original_infos={str(p.relative_to(app)):p.read_bytes() for p in app.rglob("Info.plist")}
             original_hash = hashlib.sha256(source.read_bytes()).hexdigest()
             def intercepted(args, **kwargs):
                 args = [str(x) for x in args];commands.append(args)
@@ -299,17 +286,20 @@ class OfflinePipelineTests(unittest.TestCase):
                  patch.object(m,"emit",side_effect=lambda kind,**values:events.append(dict(type=kind,**values))):
                 config = dict(account=ACCOUNT["id"],team=TEAM,device="fixture",ipa=str(source),memory=memory,
                               outputDirectory=str(temp/"Output"),install=True)
-                if not memory:config["bundleID"]="local.resigned.app"
-                if wrong_team or main_memory_missing or unrelated_rejection:
+                if rename_attempt:config["bundleID"]="local.resigned.app"
+                if wrong_team or main_memory_missing or unrelated_rejection or rename_attempt:
                     with self.assertRaises(m.InstallerError): m.sign_and_install(config)
                     self.assertFalse(any("devicectl" in c for c in commands))
                     if unrelated_rejection: self.assertEqual(sum("xcodebuild" in c for c in commands), 1)
+                    if rename_attempt:self.assertFalse(any("xcodebuild" in c for c in commands))
                     return
                 m.sign_and_install(config)
                 complete = next(e for e in events if e["type"]=="complete")
                 output = Path(complete["path"])
                 dest=temp/"Verify";dest.mkdir();m.unpack_ipa(output,dest)
                 signed = dest/"Payload/Fixture.app"
+                for relative,original_info in original_infos.items():
+                    self.assertEqual((signed/relative).read_bytes(),original_info,relative)
                 real_run(["/usr/bin/codesign","--verify","--deep","--strict",signed],quiet=True)
                 self.assertEqual(m.entitlements_of(signed).get(m.MEMORY,False),memory)
                 expected_eva = original_eva and not personal_team and not eva_rejected
@@ -327,6 +317,8 @@ class OfflinePipelineTests(unittest.TestCase):
                 verification=json.loads(Path(complete["report"]).read_text())
                 self.assertEqual(len(verification["codeComponents"]),6)
                 self.assertEqual(verification["memoryScope"],"mainExecutableOnly")
+                self.assertEqual(verification["bundleIDPolicy"],"preserveOriginal")
+                self.assertTrue(all(p["bundleID"]==p["originalBundleID"] and p["bundleIDPreserved"] for p in verification["processes"]))
                 self.assertEqual(verification["processes"][0]["extendedVirtualAddressing"],expected_eva)
                 self.assertEqual(sum(p["memoryRequested"] for p in verification["processes"]),int(memory))
                 self.assertTrue(all(p["memoryVerified"]==(memory and p["mainExecutable"]) for p in verification["processes"]))
@@ -349,6 +341,7 @@ class OfflinePipelineTests(unittest.TestCase):
     def test_eva_refusal_retries_without_eva_and_retains_memory(self):self.scenario(True,original_eva=True,eva_rejected=True)
     def test_eva_fallback_cannot_drop_required_memory(self):self.scenario(True,original_eva=True,eva_rejected=True,main_memory_missing=True)
     def test_other_capability_failure_is_not_silently_retried(self):self.scenario(True,original_eva=True,unrelated_rejection=True)
+    def test_attempted_bundle_id_override_cannot_provision_or_install(self):self.scenario(True,rename_attempt=True)
 
 
 if __name__ == "__main__":

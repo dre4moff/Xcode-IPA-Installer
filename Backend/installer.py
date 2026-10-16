@@ -17,7 +17,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -35,27 +34,6 @@ CANCELLED = False
 
 class InstallerError(Exception):
     pass
-
-
-def installation_namespace():
-    """Stable local identifier, never a credential; keep it across app updates."""
-    path = SUPPORT / "installation-id.txt"
-    SUPPORT.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if not path.exists():
-        fd, temporary = tempfile.mkstemp(prefix=".installation-id-", dir=SUPPORT)
-        try:
-            with os.fdopen(fd, "w") as stream:
-                stream.write(uuid.uuid4().hex + "\n")
-            try:
-                os.link(temporary, path)  # Atomic first-writer wins, including concurrent launches.
-            except FileExistsError:
-                pass
-        finally:
-            os.unlink(temporary)
-    value = path.read_text().strip()
-    if not re.fullmatch(r"[a-f0-9]{32}", value):
-        raise InstallerError("Identificativo locale dell’installer non valido. Ripristina installation-id.txt dal backup per conservare gli ID delle app.")
-    return value
 
 
 def emit(kind, **values):
@@ -93,9 +71,12 @@ def run(args, env=None, log=None, timeout=180, quiet=False):
             raise InstallerError("Operazione annullata.")
         if process.returncode:
             lines = [x.strip() for x in text.splitlines() if "error:" in x.lower() or "Error Domain=" in x]
-            detail = "\n".join(lines[-8:]) if lines else text[-2200:]
+            if "This device has reached the maximum number of installed apps using a free developer profile" in text or "maximum number of apps for free development profiles" in text:
+                detail = "L’iPhone ha raggiunto il limite di app installate con profili gratuiti. Un aggiornamento richiede lo stesso Bundle ID della copia esistente.\n\n" + text[-9000:]
+            else:
+                detail = "\n".join(lines[-8:]) if lines else text[-2200:]
             if "Failed Registering Bundle Identifier" in text:
-                detail += "\n\nApple non accetta questo identificativo per il team selezionato. In Opzioni usa l’ID automatico della versione aggiornata o inserisci un ID diverso."
+                detail += "\n\nApple non accetta l’identificativo originale dell’IPA per questo team. L’installer lo conserva senza rinominarlo."
             raise InstallerError(redact(detail.strip()) or "Comando non riuscito: " + str(args[0]))
         if not quiet and log:
             for line in text.splitlines():
@@ -397,25 +378,13 @@ def valid_bundle_id(value):
     return isinstance(value, str) and len(value) <= 255 and bool(re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", value))
 
 
-def default_bundle_id(original, team, namespace):
-    if not valid_bundle_id(original) or not re.fullmatch(r"[A-Z0-9]{10}", team) or not re.fullmatch(r"[a-f0-9]{32}", namespace):
-        raise InstallerError("Impossibile generare un identificativo app valido.")
-    normalized = original.lower()
-    name = normalized.rsplit(".", 1)[-1][:40].strip("-") or "app"
-    digest = hashlib.sha256(normalized.encode("ascii")).hexdigest()[:12]
-    return "local.xcodeipa.t" + team.lower() + ".i" + namespace + "." + name + "-" + digest
-
-
-def bundle_mapping(bundles, root_id, new_id):
-    if not valid_bundle_id(new_id):
-        raise InstallerError("Identificativo app non valido.")
-    result = {}
-    for old in bundles:
-        target = new_id + old[len(root_id):] if old == root_id or old.startswith(root_id + ".") else new_id + "." + old
-        if not valid_bundle_id(target) or target in result.values():
-            raise InstallerError("Gli identificativi delle estensioni non sono univoci o superano 255 caratteri.")
-        result[old] = target
-    return result
+def original_bundle_ids(bundles):
+    """Validate every process identifier and preserve its exact original spelling."""
+    if any(not valid_bundle_id(value) for value in bundles):
+        raise InstallerError("L’IPA contiene un identificativo app/estensione non valido. Gli identificativi originali non vengono modificati.")
+    if len({value.lower() for value in bundles}) != len(bundles):
+        raise InstallerError("L’IPA contiene identificativi app/estensione duplicati.")
+    return {value: value for value in bundles}
 
 
 def rewrite(value, mapping, old_prefix=None, new_prefix=None):
@@ -650,12 +619,14 @@ def sign_and_install(config):
         raise InstallerError("L’iPhone selezionato non è disponibile o non è associato al Mac.")
     metadata = inspect_ipa(config["ipa"])
     memory = bool(config.get("memory", False))
-    new_id = config.get("bundleID") or default_bundle_id(metadata["bundleID"], team, installation_namespace())
+    new_id = metadata["bundleID"]
+    if config.get("bundleID", new_id) != new_id:
+        raise InstallerError("L’identificativo originale dell’IPA viene conservato. La rinomina tramite bundleID non è consentita.")
     SUPPORT.mkdir(parents=True, exist_ok=True, mode=0o700)
     logs = SUPPORT / "Logs"; logs.mkdir(exist_ok=True, mode=0o700)
     log = logs / (dt.datetime.now().strftime("%Y%m%d-%H%M%S") + ".log"); log.touch(mode=0o600)
     emit("logfile", path=str(log))
-    emit("log", message="Team " + team + " · Bundle ID " + new_id)
+    emit("log", message="Team " + team + " · Bundle ID originale " + new_id + " (conservato)")
     with tempfile.TemporaryDirectory(prefix="xcode-ipa-sign-") as temp:
         work = Path(temp)
         emit("phase", message="Preparazione dell’IPA", progress=0.05)
@@ -670,7 +641,7 @@ def sign_and_install(config):
             binary = bundle_executable(bundle, info)
             check_encryption(binary)
             units.append(dict(path=bundle, info=info, old_id=info["CFBundleIdentifier"], original=entitlements_of(bundle)))
-        mapping = bundle_mapping([u["old_id"] for u in units], metadata["bundleID"], new_id)
+        mapping = original_bundle_ids([u["old_id"] for u in units])
         for unit in units:
             unit["is_main"] = unit["path"] == root
             unit["memory"] = memory and unit["is_main"]
@@ -736,9 +707,7 @@ def sign_and_install(config):
             if path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path)
         for unit in units:
-            info = rewrite(unit["info"], mapping)
-            info["CFBundleIdentifier"] = unit["new_id"]
-            (unit["path"] / "Info.plist").write_bytes(plistlib.dumps(info))
+            # Keep the IPA's Info.plist and relationships byte-for-byte, including IDs.
             shutil.copyfile(unit["profile"], unit["path"] / "embedded.mobileprovision")
         for i, (path, unit) in enumerate(plan):
             identity = unit["identity"] if unit else units[0]["identity"]
@@ -751,6 +720,8 @@ def sign_and_install(config):
             run(args + [path], log=log)
             run(["/usr/bin/codesign", "--verify", "--strict", "--verbose=2", path], log=log)
             if unit:
+                if plistlib.loads((path / "Info.plist").read_bytes())["CFBundleIdentifier"] != unit["old_id"]:
+                    raise InstallerError("L’identificativo originale di un componente è stato modificato.")
                 actual = entitlements_of(path)
                 assert_signature(actual, team, unit["app_identifier"], unit["memory"])
                 assert_memory_scope(actual, unit["is_main"])
@@ -765,9 +736,10 @@ def sign_and_install(config):
         pack_ipa(root, output)
         report_path = output.with_suffix(".verification.json")
         report_path.write_text(json.dumps(dict(team=team, account=account["name"], personalTeam=personal_team,
-            memoryRequested=memory, memoryScope="mainExecutableOnly", extendedVirtualAddressingPolicy="automaticForTeam",
+            memoryRequested=memory, memoryScope="mainExecutableOnly", extendedVirtualAddressingPolicy="automaticForTeam", bundleIDPolicy="preserveOriginal",
             codeComponents=[dict(path=str(p.relative_to(root.parent)), kind="app/extension" if unit else "library/bundle", signatureVerified=True) for p,unit in plan],
-            processes=[dict(bundleID=u["new_id"], team=team, mainExecutable=u["is_main"], memoryRequested=u["memory"],
+            processes=[dict(bundleID=u["new_id"], originalBundleID=u["old_id"], bundleIDPreserved=True,
+                            team=team, mainExecutable=u["is_main"], memoryRequested=u["memory"],
                             memoryVerified=u["memory"], memoryPolicyVerified=True, expires=u["expiry"],
                             extendedVirtualAddressing=u["effective"].get(EVA, False), evaDecision=u["eva_policy"],
                             excludedOriginalMemoryCapabilities=sorted(k for k in MEMORY_ENTITLEMENTS if k in u["original"] and k not in u["requested"]),
@@ -790,8 +762,7 @@ def main():
         if args.command == "discover":
             env = xcode_environment()
             version = run(["/usr/bin/xcrun", "xcodebuild", "-version"], env=env, quiet=True).decode().strip()
-            emit("discovery", accounts=discover_accounts(), devices=discover_devices(env), xcode=version,
-                 installationNamespace=installation_namespace())
+            emit("discovery", accounts=discover_accounts(), devices=discover_devices(env), xcode=version)
         elif args.command == "inspect":
             emit("ipa", **inspect_ipa(config["path"]))
         elif args.command == "save-account":

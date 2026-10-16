@@ -40,7 +40,6 @@ final class InstallerModel: ObservableObject {
     @Published var teamID = ""
     @Published var deviceID = ""
     @Published var ipa: IPADetails?
-    @Published var bundleID = ""
     @Published var increasedMemory = true
     @Published var preserveCapabilities = true
     @Published var isBusy = false
@@ -59,10 +58,10 @@ final class InstallerModel: ObservableObject {
     @Published var teamSetupID = ""
     @Published var teamSetupPersonal = true
     private var process: Process?
-    private var installationNamespace = ""
 
     var selectedAccount: XcodeAccount? { accounts.first { $0.id == accountID } }
     var selectedTeam: SigningTeam? { selectedAccount?.teams.first { $0.id == teamID } }
+    var bundleID: String { ipa?.bundleID ?? "" }
     var canRun: Bool {
         !isBusy && ipa != nil && selectedTeam != nil && phones.contains { $0.id == deviceID } && !bundleID.isEmpty
     }
@@ -83,20 +82,14 @@ final class InstallerModel: ObservableObject {
 
     func inspect(_ url: URL) {
         guard !isBusy else { return }
-        resultPath = nil; ipa = nil; bundleID = ""
+        resultPath = nil; ipa = nil
         call("inspect", data: ["path": url.path])
     }
 
     func syncTeam() {
         let available = selectedAccount?.teams ?? []
         if !available.contains(where: { $0.id == teamID }) { teamID = available.first?.id ?? "" }
-        updateBundleID()
         UserDefaults.standard.set(accountID, forKey: "SelectedAccount")
-    }
-
-    func updateBundleID() {
-        guard let ipa else { return }
-        bundleID = BundleIDPolicy.make(original: ipa.bundleID, team: teamID, namespace: installationNamespace) ?? ""
     }
 
     func configureTeam() {
@@ -116,7 +109,7 @@ final class InstallerModel: ObservableObject {
         guard canRun, let ipa else { return }
         progress = 0; logs = ""; resultPath = nil; verificationPath = nil; errorMessage = nil; isInstalling = true
         let data: [String: Any] = ["account": accountID, "team": teamID, "device": deviceID,
-            "ipa": ipa.path, "bundleID": bundleID, "memory": increasedMemory, "install": install,
+            "ipa": ipa.path, "memory": increasedMemory, "install": install,
             "preserveCapabilities": preserveCapabilities]
         call("run", data: data)
     }
@@ -135,7 +128,6 @@ final class InstallerModel: ObservableObject {
         }
         switch type {
         case "discovery":
-            installationNamespace = event["installationNamespace"] as? String ?? ""
             if let raw = try? JSONSerialization.data(withJSONObject: event["accounts"] ?? []),
                let values = try? JSONDecoder().decode([XcodeAccount].self, from: raw) { accounts = values }
             if let raw = try? JSONSerialization.data(withJSONObject: event["devices"] ?? []),
@@ -150,7 +142,7 @@ final class InstallerModel: ObservableObject {
             status = accounts.isEmpty ? "Aggiungi un account in Xcode → Impostazioni → Apple Accounts." : "Account Xcode e dispositivi aggiornati."
         case "ipa":
             if let value = try? JSONDecoder().decode(IPADetails.self, from: data) {
-                ipa = value; updateBundleID(); status = "IPA pronta per la firma."
+                ipa = value; status = "IPA pronta per la firma. Identificativi originali conservati."
             }
         case "phase":
             status = event["message"] as? String ?? status
@@ -310,9 +302,9 @@ struct InstallerView: View {
                 .font(.caption).foregroundStyle(.secondary)
             DisclosureGroup("Opzioni", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 8) {
-                    TextField("Identificativo app", text: $model.bundleID)
-                    Button("Usa ID automatico", action: model.updateBundleID).disabled(model.ipa == nil)
-                    Text("ID distinto per app, team e Mac, stabile nelle firme successive. Le estensioni vengono aggiornate insieme all’app.")
+                    Text("Identificativo originale: \(model.bundleID.isEmpty ? "seleziona un’IPA" : model.bundleID)")
+                        .textSelection(.enabled)
+                    Text("Gli identificativi di app, estensioni e app incorporate restano quelli dell’IPA. Un aggiornamento richiede lo stesso ID della copia installata e una firma compatibile.")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Mantieni le capability originali dell’IPA", isOn: $model.preserveCapabilities)
                     Text("Le capability originali vengono richieste al tuo team; EVA segue la disponibilità del team e le capability memoria restano solo sul principale. Disattivandole puoi perdere App Groups, iCloud o aggiornamenti push.")
@@ -361,7 +353,6 @@ struct InstallerView: View {
         .onAppear(perform: model.refresh)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.cancel() }
         .onChange(of: model.accountID) { _ in model.syncTeam() }
-        .onChange(of: model.teamID) { _ in model.updateBundleID() }
         .sheet(isPresented: $model.showTeamSetup) {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Team dell’account Xcode").font(.title3.bold())
