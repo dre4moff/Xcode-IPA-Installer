@@ -16,10 +16,17 @@ for build_arch in arm64 x86_64; do
     xcrun swiftc -parse-as-library -swift-version 5 -target "$build_arch-apple-macosx12.0" -O \
         -module-cache-path "$build_temp/Modules-$build_arch" "$project_dir/Sources/App.swift" "$project_dir/Sources/InstallerView.swift" \
         "$project_dir/Sources/Localization.swift" "$project_dir/Sources/TeamBundleIDPolicy.swift" \
+        "$project_dir/Sources/ImportedBundleIDPolicy.swift" \
         -o "$build_temp/XcodeIPAInstaller-$build_arch"
+    xcrun swiftc -parse-as-library -swift-version 5 -target "$build_arch-apple-macosx12.0" -O \
+        -module-cache-path "$build_temp/Modules-$build_arch" "$project_dir/Sources/CertificateImport.swift" \
+        "$project_dir/Sources/CertificateTool.swift" -o "$build_temp/CertificateTool-$build_arch"
 done
 xcrun lipo -create "$build_temp/XcodeIPAInstaller-arm64" "$build_temp/XcodeIPAInstaller-x86_64" \
     -output "$app/Contents/MacOS/XcodeIPAInstaller"
+xcrun lipo -create "$build_temp/CertificateTool-arm64" "$build_temp/CertificateTool-x86_64" \
+    -output "$app/Contents/MacOS/CertificateTool"
+codesign --force --sign - --timestamp=none "$app/Contents/MacOS/CertificateTool"
 xcrun swiftc -swift-version 5 -module-cache-path "$build_temp/Modules" \
     "$project_dir/Sources/Icon.swift" -o "$build_temp/icon-builder"
 "$build_temp/icon-builder" "$build_temp/AppIcon.iconset"

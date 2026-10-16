@@ -115,7 +115,11 @@ struct InstallerView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.cancel() }
         .onChange(of: model.accountID) { _ in model.syncTeam() }
         .onChange(of: model.teamID) { _ in model.updateBundleID() }
+        .onChange(of: model.signingMode) { _ in model.updateBundleID() }
+        .onChange(of: model.certificateID) { _ in model.syncCertificate() }
+        .onChange(of: model.profileID) { _ in model.syncCertificate() }
         .sheet(isPresented: $model.showTeamSetup) { teamSheet }
+        .sheet(isPresented: $model.showCertificateImport, onDismiss: { model.importPassword = "" }) { certificateSheet }
     }
 
     private var header: some View {
@@ -129,7 +133,7 @@ struct InstallerView: View {
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Text(L10n.text("Sign & install")).font(.system(size: 30, weight: .semibold, design: .default))
-            Text(L10n.text("Your IPA, signed with your Xcode account."))
+            Text(L10n.text("Your IPA, signed on your Mac."))
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(.bottom, 2)
     }
@@ -180,20 +184,64 @@ struct InstallerView: View {
         Surface {
             VStack(alignment: .leading, spacing: 18) {
                 sectionTitle("Signing", symbol: "person.crop.circle")
-                selectionField("Xcode account", selection: $model.accountID,
-                               options: model.accounts.map { ($0.id, $0.name) }, empty: "No Xcode accounts")
-                if wide {
-                    HStack(alignment: .top, spacing: 18) { teamField; phoneField }
-                } else {
-                    teamField
+                Picker(L10n.text("Signing source"), selection: $model.signingMode) {
+                    Text(L10n.text("Xcode account")).tag("xcode")
+                    Text(L10n.text("Imported certificate")).tag("imported")
+                }.pickerStyle(.segmented).labelsHidden()
+                if model.usesImportedCertificate {
+                    importedSigningFields
                     phoneField
-                }
-                if model.accounts.isEmpty {
-                    Text(L10n.text("Add your account in Xcode → Settings → Apple Accounts, then refresh."))
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    selectionField("Xcode account", selection: $model.accountID,
+                                   options: model.accounts.map { ($0.id, $0.name) }, empty: "No Xcode accounts")
+                    if wide {
+                        HStack(alignment: .top, spacing: 18) { teamField; phoneField }
+                    } else { teamField; phoneField }
+                    if model.accounts.isEmpty {
+                        Text(L10n.text("Add your account in Xcode → Settings → Apple Accounts, then refresh."))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }.disabled(model.isBusy)
+    }
+
+    private var importedSigningFields: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            selectionField("Certificate", selection: $model.certificateID,
+                           options: model.certificates.map { ($0.id, $0.name) }, empty: "No imported certificates")
+            if let certificate = model.selectedCertificate {
+                Text("Team \(certificate.team) · \(L10n.text("Certificate expires: %@", String(certificate.expires.prefix(10))))")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                selectionField("Main app profile", selection: $model.profileID,
+                               options: certificate.profiles.map { ($0.id, $0.name + " · " + $0.bundlePattern) },
+                               empty: "Choose a profile")
+                if let profile = model.selectedProfile {
+                    Text(profile.bundlePattern).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(L10n.text("Profile expires: %@", String(profile.expires.prefix(10))))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(L10n.text("Memory: %@ · EVA: %@ · Debugging: %@",
+                                   L10n.text(profile.memory ? "Allowed" : "Unavailable"),
+                                   L10n.text(profile.eva ? "Allowed" : "Unavailable"),
+                                   L10n.text(profile.debug ? "Allowed" : "Unavailable")))
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack {
+                Button(L10n.text("Import certificate…"), action: model.beginCertificateImport)
+                if model.selectedCertificate != nil {
+                    Menu {
+                        Button(L10n.text("Add profiles…")) { model.chooseProfiles(adding: true) }
+                        Button(L10n.text("Forget certificate"), action: model.forgetCertificate)
+                    } label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton).fixedSize().help(L10n.text("Manage certificate"))
+                    .accessibilityLabel(L10n.text("Manage certificate"))
+                }
+            }
+            Text(L10n.text("Extensions use matching profiles from the same certificate. Missing permissions stop signing with an explanation."))
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var teamField: some View {
@@ -252,7 +300,9 @@ struct InstallerView: View {
                 Text(L10n.text("Applies to the main app, using the signing team. Every component is still signed and verified."))
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Divider().opacity(0.5)
-                Label(L10n.text(model.selectedTeam?.personal == true
+                Label(L10n.text(model.usesImportedCertificate
+                      ? "EVA is kept when requested and authorized by the profile. Debugging follows get-task-allow; JIT also needs a compatible device and method."
+                      : model.selectedTeam?.personal == true
                       ? "EVA is unavailable for Personal Teams. Memory Limit stays independent."
                       : "EVA is kept when requested by the IPA and supported by the team."), systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -269,14 +319,18 @@ struct InstallerView: View {
                         Text(model.bundleID.isEmpty ? L10n.text("Choose an IPA and a team") : model.bundleID)
                             .font(.system(.callout, design: .monospaced)).textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text(L10n.text("The selected Team ID is appended once. Extension identifiers follow the main app."))
+                        Text(L10n.text(model.usesImportedCertificate
+                                       ? "The imported profile controls the identifier. Exact App IDs are used as supplied; wildcard profiles keep compatible original IDs."
+                                       : "The selected Team ID is appended once. Extension identifiers follow the main app."))
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     Divider().opacity(0.5)
                     Toggle(L10n.text("Keep original capabilities"), isOn: $model.preserveCapabilities).toggleStyle(.switch)
                     Text(L10n.text("Requests the IPA’s capabilities from your team. Turning this off may affect App Groups, iCloud, or push notifications."))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Button(L10n.text("Set up team…"), action: model.configureTeam).disabled(model.selectedAccount == nil)
+                    if !model.usesImportedCertificate {
+                        Button(L10n.text("Set up team…"), action: model.configureTeam).disabled(model.selectedAccount == nil)
+                    }
                 }.padding(.top, 16)
             } label: {
                 Label(L10n.text("Options"), systemImage: "slider.horizontal.3").font(.system(size: 14, weight: .medium))
@@ -406,5 +460,47 @@ struct InstallerView: View {
                     .disabled(model.teamSetupID.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().range(of: "^[A-Z0-9]{10}$", options: .regularExpression) == nil)
             }.padding(20)
         }.frame(minWidth: 380, idealWidth: 460, minHeight: 420, idealHeight: 460)
+    }
+
+    private var certificateSheet: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text(L10n.text("Import signing certificate")).font(.title2.weight(.semibold))
+                    Text(L10n.text("Choose a P12/PFX and one or more mobileprovision files, or select their folder. Text files are never read."))
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button(L10n.text("Choose folder…"), action: model.chooseCertificateFolder)
+                    Divider()
+                    Button(L10n.text("Choose P12…"), action: model.chooseP12)
+                    Text(model.importP12.isEmpty ? L10n.text("No certificate selected") : URL(fileURLWithPath: model.importP12).lastPathComponent)
+                        .font(.caption).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    SecureField(L10n.text("P12 password (leave empty if none)"), text: $model.importPassword)
+                        .textFieldStyle(.roundedBorder)
+                    Button(L10n.text("Choose profiles…")) { model.chooseProfiles() }
+                    Text(L10n.text("Profiles selected: %d", model.importProfiles.count))
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.importProfiles, id: \.self) { path in
+                        Text(URL(fileURLWithPath: path).lastPathComponent).font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text(L10n.text("The private key is imported into your macOS default Keychain. The P12 password is not saved. macOS may ask you to allow Keychain access."))
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if let error = model.errorMessage {
+                        Text(error).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if model.isBusy { ProgressView().controlSize(.small) }
+                }.padding(28)
+            }.disabled(model.isBusy)
+            Divider()
+            HStack {
+                Spacer()
+                Button(L10n.text("Cancel")) { model.showCertificateImport = false; model.importPassword = "" }
+                    .keyboardShortcut(.cancelAction).disabled(model.isBusy)
+                Button(L10n.text("Import"), action: model.importCertificate)
+                    .keyboardShortcut(.defaultAction).modifier(ActionStyle(prominent: true))
+                    .disabled(model.isBusy || model.importP12.isEmpty || model.importProfiles.isEmpty)
+            }.padding(20)
+        }.frame(minWidth: 400, idealWidth: 500, minHeight: 460, idealHeight: 560)
     }
 }

@@ -261,7 +261,7 @@ class OfflinePipelineTests(unittest.TestCase):
     """Real local ad-hoc signing/ZIP verification; Apple provisioning/install always intercepted."""
     def scenario(self, memory, wrong_team=False, main_memory_missing=False, original_eva=False,
                  personal_team=False, eva_rejected=False, unrelated_rejection=False, rename_attempt=False,
-                 already_suffixed=False):
+                 already_suffixed=False, external=False, debug=False, wildcard=False, missing_extension=False):
         fixture = Path(os.environ["XCODE_IPA_FIXTURES"])
         events, commands = [], []
         real_run = m.run
@@ -273,7 +273,21 @@ class OfflinePipelineTests(unittest.TestCase):
             companion=app/"Companions/Companion.app";companion.parent.mkdir()
             shutil.copytree(fixture/"Provision0.app",companion)
             original_id="local.fixture.app"+("."+TEAM if already_suffixed else "")
-            target_id="local.fixture.app."+TEAM
+            target_id=(original_id if wildcard else "local.external.App") if external else "local.fixture.app."+TEAM
+            fingerprint=hashlib.sha1(b"fixture-certificate").hexdigest().upper()
+            external_records=[]
+            if external:
+                for n,suffix in enumerate(["", ".companion", ".share"]):
+                    if missing_extension and n:continue
+                    if wildcard and n:continue
+                    prof=profile("local.fixture.*" if wildcard else target_id+suffix,memory)
+                    prof["Entitlements"].update({"keychain-access-groups":[TEAM+".*"],"get-task-allow":debug,
+                        "com.apple.security.application-groups":["group.fixture"]})
+                    if original_eva:prof["Entitlements"][m.EVA]=True
+                    if main_memory_missing:prof["Entitlements"].pop(m.MEMORY,None)
+                    if wrong_team:prof["TeamIdentifier"]=[OTHER]
+                    path=temp/(str(n)+".mobileprovision");path.write_bytes(plistlib.dumps(prof))
+                    external_records.append((path,prof))
             for p, bundle_id in [(app,original_id),(extension,original_id+".share"),(companion,original_id+".companion")]:
                 info = plistlib.loads((p/"Info.plist").read_bytes());info["CFBundleIdentifier"] = bundle_id
                 if p==app:info["NSSupportsLiveActivities"]=True
@@ -329,8 +343,10 @@ class OfflinePipelineTests(unittest.TestCase):
                     entpath = project.parent/(target+".effective");entpath.write_bytes(plistlib.dumps(ent))
                     real_run(["/usr/bin/codesign","--force","--sign","-","--entitlements",entpath,"--timestamp=none",product],quiet=True)
                     return b"fixture: offline Xcode result"
-                if args[0]=="/usr/bin/security" and "find-identity" in args: return b"offline-identity"
+                if args[0]=="/usr/bin/security" and "find-identity" in args: return fingerprint.encode()
                 if "devicectl" in args: return b"fixture: intercepted install"
+                if external and args[0]=="/usr/bin/codesign" and "--sign" in args:
+                    args=list(args);args[args.index("--sign")+1]="-"
                 return real_run(args, **kwargs)
             account = dict(ACCOUNT, teams=[dict(id=TEAM, personal=personal_team)])
             with patch.object(m,"discover_accounts",return_value=[account]), \
@@ -343,8 +359,13 @@ class OfflinePipelineTests(unittest.TestCase):
                  patch.object(m,"emit",side_effect=lambda kind,**values:events.append(dict(type=kind,**values))):
                 config = dict(account=ACCOUNT["id"],team=TEAM,device="fixture",ipa=str(source),memory=memory,
                               outputDirectory=str(temp/"Output"),install=True)
+                if external:
+                    config.update(signingMode="imported",certificate=fingerprint,profile="fixture")
+                    context=(dict(id=fingerprint,name="Imported fixture",team=TEAM),external_records,external_records[0])
+                    context_patch=patch.object(m,"external_context",return_value=context)
+                    context_patch.start();self.addCleanup(context_patch.stop)
                 if rename_attempt:config["bundleID"]="local.fixture.app."+OTHER
-                if wrong_team or main_memory_missing or unrelated_rejection or rename_attempt:
+                if wrong_team or main_memory_missing or unrelated_rejection or rename_attempt or missing_extension:
                     with self.assertRaises(m.InstallerError): m.sign_and_install(config)
                     self.assertFalse(any("devicectl" in c for c in commands))
                     if unrelated_rejection: self.assertEqual(sum("xcodebuild" in c for c in commands), 1)
@@ -368,7 +389,10 @@ class OfflinePipelineTests(unittest.TestCase):
                 self.assertEqual(m.entitlements_of(signed).get(m.EVA,False),expected_eva)
                 if original_eva:
                     self.assertEqual(m.entitlements_of(signed)["com.apple.security.application-groups"], ["group.fixture"])
-                self.assertEqual(sum("xcodebuild" in c for c in commands), 4 if eva_rejected else 3)
+                self.assertEqual(sum("xcodebuild" in c for c in commands), 0 if external else 4 if eva_rejected else 3)
+                if external:
+                    for process in [signed,signed/"PlugIns/Share.appex",signed/"Companions/Companion.app"]:
+                        self.assertEqual(m.entitlements_of(process).get("get-task-allow"),debug)
                 for auxiliary in [signed/"PlugIns/Share.appex",signed/"Companions/Companion.app"]:
                     self.assertFalse(m.MEMORY_ENTITLEMENTS.intersection(m.entitlements_of(auxiliary)))
                     real_run(["/usr/bin/codesign","--verify","--strict",auxiliary],quiet=True)
@@ -379,7 +403,7 @@ class OfflinePipelineTests(unittest.TestCase):
                 verification=json.loads(Path(complete["report"]).read_text())
                 self.assertEqual(len(verification["codeComponents"]),6)
                 self.assertEqual(verification["memoryScope"],"mainExecutableOnly")
-                self.assertEqual(verification["bundleIDPolicy"],"selectedTeamSuffix")
+                self.assertEqual(verification["bundleIDPolicy"],"importedProfileAuthorization" if external else "selectedTeamSuffix")
                 self.assertTrue(all(p["bundleID"]==target_id+p["originalBundleID"][len(original_id):] and p["bundleIDVerified"] for p in verification["processes"]))
                 self.assertEqual(verification["processes"][0]["extendedVirtualAddressing"],expected_eva)
                 self.assertEqual(sum(p["memoryRequested"] for p in verification["processes"]),int(memory))
@@ -405,6 +429,13 @@ class OfflinePipelineTests(unittest.TestCase):
     def test_other_capability_failure_is_not_silently_retried(self):self.scenario(True,original_eva=True,unrelated_rejection=True)
     def test_attempted_bundle_id_override_cannot_provision_or_install(self):self.scenario(True,rename_attempt=True)
     def test_existing_correct_team_suffix_is_not_duplicated(self):self.scenario(True,already_suffixed=True)
+
+    def test_imported_distribution_signs_every_component_with_exact_profiles(self):self.scenario(True,external=True,original_eva=True)
+    def test_imported_development_keeps_debugging_for_all_processes(self):self.scenario(True,external=True,debug=True)
+    def test_imported_wildcard_profile_covers_all_processes(self):self.scenario(False,external=True,wildcard=True)
+    def test_imported_missing_extension_profile_cannot_install(self):self.scenario(True,external=True,missing_extension=True)
+    def test_imported_memory_permission_is_required(self):self.scenario(True,external=True,main_memory_missing=True)
+    def test_imported_wrong_team_cannot_install(self):self.scenario(True,external=True,wrong_team=True)
 
 
 if __name__ == "__main__":

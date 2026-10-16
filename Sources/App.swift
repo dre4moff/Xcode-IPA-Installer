@@ -32,6 +32,17 @@ struct IPADetails: Decodable {
     let extensions: Int
 }
 
+struct ImportedProfile: Decodable, Identifiable {
+    let id, name, bundlePattern, team, expires: String
+    let memory, eva, debug, allDevices: Bool
+    let deviceCount: Int
+}
+
+struct ImportedCertificate: Decodable, Identifiable {
+    let id, name, expires, team: String
+    let profiles: [ImportedProfile]
+}
+
 @MainActor
 final class InstallerModel: ObservableObject {
     @Published var accounts: [XcodeAccount] = []
@@ -58,12 +69,24 @@ final class InstallerModel: ObservableObject {
     @Published var teamSetupName = ""
     @Published var teamSetupID = ""
     @Published var teamSetupPersonal = true
+    @Published var signingMode = UserDefaults.standard.string(forKey: "SigningMode") ?? "xcode"
+    @Published var certificates: [ImportedCertificate] = []
+    @Published var certificateID = ""
+    @Published var profileID = ""
+    @Published var showCertificateImport = false
+    @Published var importP12 = ""
+    @Published var importProfiles: [String] = []
+    @Published var importPassword = ""
     private var process: Process?
 
     var selectedAccount: XcodeAccount? { accounts.first { $0.id == accountID } }
     var selectedTeam: SigningTeam? { selectedAccount?.teams.first { $0.id == teamID } }
+    var usesImportedCertificate: Bool { signingMode == "imported" }
+    var selectedCertificate: ImportedCertificate? { certificates.first { $0.id == certificateID } }
+    var selectedProfile: ImportedProfile? { selectedCertificate?.profiles.first { $0.id == profileID } }
     var canRun: Bool {
-        !isBusy && ipa != nil && selectedTeam != nil && phones.contains { $0.id == deviceID } && !bundleID.isEmpty
+        !isBusy && ipa != nil && (usesImportedCertificate ? selectedProfile != nil : selectedTeam != nil)
+            && phones.contains { $0.id == deviceID } && !bundleID.isEmpty
     }
 
     func refresh() {
@@ -76,7 +99,7 @@ final class InstallerModel: ObservableObject {
         panel.allowedContentTypes = [UTType(filenameExtension: "ipa") ?? .zip]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = L10n.text("Choose an IPA to sign with an existing Xcode account.")
+        panel.message = L10n.text("Choose an IPA to sign on your Mac.")
         if panel.runModal() == .OK, let url = panel.url { inspect(url) }
     }
 
@@ -94,7 +117,63 @@ final class InstallerModel: ObservableObject {
     }
 
     func updateBundleID() {
-        bundleID = ipa.flatMap { TeamBundleIDPolicy.make(original: $0.bundleID, team: teamID) } ?? ""
+        if usesImportedCertificate, let profile = selectedProfile, let ipa {
+            bundleID = ImportedBundleIDPolicy.make(original: ipa.bundleID, pattern: profile.bundlePattern)
+        } else if !usesImportedCertificate {
+            bundleID = ipa.flatMap { TeamBundleIDPolicy.make(original: $0.bundleID, team: teamID) } ?? ""
+        } else { bundleID = "" }
+        UserDefaults.standard.set(signingMode, forKey: "SigningMode")
+    }
+
+    func syncCertificate() {
+        let profiles = selectedCertificate?.profiles ?? []
+        if !profiles.contains(where: { $0.id == profileID }) { profileID = profiles.first?.id ?? "" }
+        updateBundleID()
+        UserDefaults.standard.set(certificateID, forKey: "SelectedCertificate")
+        UserDefaults.standard.set(profileID, forKey: "SelectedProfile")
+    }
+
+    func beginCertificateImport() {
+        importP12 = ""; importProfiles = []; importPassword = ""; errorMessage = nil
+        showCertificateImport = true
+    }
+
+    func chooseCertificateFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            let files = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+            let p12 = files.filter { ["p12", "pfx"].contains($0.pathExtension.lowercased()) }
+            importP12 = p12.count == 1 ? p12[0].path : ""
+            importProfiles = files.filter { $0.pathExtension.lowercased() == "mobileprovision" }.map(\.path).sorted()
+        }
+    }
+
+    func chooseP12() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "p12") ?? .data, UTType(filenameExtension: "pfx") ?? .data]
+        if panel.runModal() == .OK, let url = panel.url { importP12 = url.path }
+    }
+
+    func chooseProfiles(adding: Bool = false) {
+        let panel = NSOpenPanel(); panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "mobileprovision") ?? .data]
+        if panel.runModal() == .OK {
+            let paths = panel.urls.map(\.path)
+            if adding {
+                call("import-signing", data: ["certificate": certificateID, "profiles": paths])
+            } else { importProfiles = paths }
+        }
+    }
+
+    func importCertificate() {
+        let data: [String: Any] = ["p12": importP12, "profiles": importProfiles, "password": importPassword]
+        importPassword = ""
+        call("import-signing", data: data)
+    }
+
+    func forgetCertificate() {
+        call("remove-signing", data: ["certificate": certificateID])
     }
 
     func configureTeam() {
@@ -114,6 +193,7 @@ final class InstallerModel: ObservableObject {
         guard canRun, let ipa else { return }
         progress = 0; logs = ""; resultPath = nil; verificationPath = nil; errorMessage = nil; isInstalling = true
         let data: [String: Any] = ["account": accountID, "team": teamID, "device": deviceID,
+            "signingMode": signingMode, "certificate": certificateID, "profile": profileID,
             "ipa": ipa.path, "memory": increasedMemory, "install": install,
             "preserveCapabilities": preserveCapabilities]
         call("run", data: data)
@@ -133,6 +213,7 @@ final class InstallerModel: ObservableObject {
         }
         switch type {
         case "discovery":
+            consumeCertificates(event)
             if let raw = try? JSONSerialization.data(withJSONObject: event["accounts"] ?? []),
                let values = try? JSONDecoder().decode([XcodeAccount].self, from: raw) { accounts = values }
             if let raw = try? JSONSerialization.data(withJSONObject: event["devices"] ?? []),
@@ -144,7 +225,12 @@ final class InstallerModel: ObservableObject {
             }
             syncTeam()
             if !phones.contains(where: { $0.id == deviceID }) { deviceID = phones.first?.id ?? "" }
-            status = accounts.isEmpty ? L10n.text("Add an account in Xcode → Settings → Apple Accounts.") : L10n.text("Accounts and devices are up to date.")
+            status = accounts.isEmpty && certificates.isEmpty ? L10n.text("Add an account in Xcode or import a signing certificate.") : L10n.text("Accounts and devices are up to date.")
+        case "assets":
+            consumeCertificates(event)
+            if let selected = event["selected"] as? String { certificateID = selected }
+            syncCertificate(); showCertificateImport = false; importPassword = ""
+            status = L10n.text("Signing certificates and profiles are up to date.")
         case "ipa":
             if let value = try? JSONDecoder().decode(IPADetails.self, from: data) {
                 ipa = value; updateBundleID(); status = L10n.text("Ready to sign with the selected team.")
@@ -169,6 +255,17 @@ final class InstallerModel: ObservableObject {
             DispatchQueue.main.async { self.refresh() }
         default: break
         }
+    }
+
+    private func consumeCertificates(_ event: [String: Any]) {
+        if let raw = try? JSONSerialization.data(withJSONObject: event["certificates"] ?? []),
+           let values = try? JSONDecoder().decode([ImportedCertificate].self, from: raw) { certificates = values }
+        if !certificates.contains(where: { $0.id == certificateID }) {
+            let previous = UserDefaults.standard.string(forKey: "SelectedCertificate")
+            certificateID = certificates.first(where: { $0.id == previous })?.id ?? certificates.first?.id ?? ""
+            profileID = UserDefaults.standard.string(forKey: "SelectedProfile") ?? ""
+        }
+        syncCertificate()
     }
 
     private func appendLog(_ text: String) {

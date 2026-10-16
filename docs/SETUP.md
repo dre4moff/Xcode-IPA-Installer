@@ -91,6 +91,12 @@ The policy applies to all IPAs. EVA is not added when the original app does not 
 
 macOS chooses English or Italian using its standard language preferences. Unsupported languages fall back to English; there is no in-app selector. Light/dark appearance and Reduce Transparency follow system settings. Xcode and iOS diagnostics may use their own language.
 
+## Import a certificate instead of using an Xcode account
+
+Choose **Signing → Imported certificate → Import certificate…**. Choose the P12/PFX and one or more mobileprovision files, or their folder, then enter the P12 password in the secure field. Leave it empty if there is no password. Text files are ignored. Select the main profile after import, connect a covered iPhone, and choose Sign only or Sign & install. No Apple Account sign-in is required in this mode.
+
+The private key enters your macOS default Keychain; the password is not saved. Allow any Keychain request yourself. Add extension profiles for that certificate through the management menu. Exact main App IDs cannot cover arbitrary extensions; a matching wildcard or separate matching profiles are required. Missing permissions produce an error instead of omitting components. [Full profile and JIT behavior](../README.md#imported-certificates-and-paid-profiles).
+
 ## Troubleshooting
 
 | Symptom | Check |

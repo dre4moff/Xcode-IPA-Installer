@@ -79,6 +79,12 @@ Le due capability sono indipendenti:
 
 La gestione è generale per tutte le IPA. EVA non viene aggiunta a un’app che non la richiede. L’esclusione di EVA non disattiva Increased Memory Limit. Le altre capability originali restano richieste, salvo che tu disattivi esplicitamente **Mantieni le capability originali**. Nessuna di queste opzioni aggiunge RAM fisica.
 
+## Importare un certificato invece di usare Xcode
+
+Scegli **Firma → Certificato importato → Importa certificato…**. Seleziona P12/PFX e uno o più mobileprovision, oppure la cartella che li contiene. Inserisci la password nel campo protetto, lasciandola vuota se assente; i file di testo vengono ignorati. Dopo l’importazione scegli il profilo principale e un iPhone incluso nel profilo, poi Solo firma o Firma e installa. Questa modalità non richiede l’accesso a un account Apple.
+
+La chiave privata viene importata nel Portachiavi predefinito; la password non viene salvata. Gestisci personalmente eventuali richieste di macOS. Aggiungi i profili delle estensioni dal menu di gestione. Il profilo esatto del principale non copre estensioni arbitrarie: servono profili compatibili o una wildcard appropriata. I permessi mancanti causano un errore, senza saltare componenti. [Dettagli su profili e JIT](../README.it.md#certificati-e-profili-importati).
+
 ## Problemi comuni
 
 | Messaggio o sintomo | Cosa controllare |

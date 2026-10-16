@@ -31,8 +31,20 @@ export XCODE_IPA_FIXTURES="$test_temp/Products/Debug-iphoneos"
 xcrun --sdk iphoneos clang -target arm64-apple-ios15.0 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
     -dynamiclib -x c "$test_temp/Project/main.c" -o "$XCODE_IPA_FIXTURES/libFixture.dylib"
 xcrun python3 -m unittest discover -s "$project_dir/Tests" -v
+# Synthetic PKCS#12 only. The real user's certificate folder is never imported by tests.
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$test_temp/fixture.key" -out "$test_temp/fixture.pem" \
+    -days 2 -subj '/CN=Offline Certificate Fixture/OU=ABCDEFGHIJ' > "$test_temp/openssl.log" 2>&1
+openssl x509 -in "$test_temp/fixture.pem" -outform DER -out "$test_temp/fixture.der"
+openssl pkcs12 -export -inkey "$test_temp/fixture.key" -in "$test_temp/fixture.pem" \
+    -out "$test_temp/fixture.p12" -passout stdin <<< 'offline-test-password'
+xcrun swiftc -parse-as-library -swift-version 5 -target arm64-apple-macosx12.0 \
+    -module-cache-path "$test_temp/SwiftModules" "$project_dir/Sources/CertificateImport.swift" \
+    "$project_dir/Tests/CertificateImportTests.swift" -o "$test_temp/certificate-tests" \
+    > "$test_temp/certificate-build.log" 2>&1 || { cat "$test_temp/certificate-build.log"; exit 1; }
+"$test_temp/certificate-tests" "$test_temp"
 xcrun swiftc -parse-as-library -swift-version 5 -module-cache-path "$test_temp/SwiftModules" \
-    "$project_dir/Sources/TeamBundleIDPolicy.swift" "$project_dir/Tests/TeamBundleIDPolicyTests.swift" -o "$test_temp/policy-tests"
+    "$project_dir/Sources/TeamBundleIDPolicy.swift" "$project_dir/Sources/ImportedBundleIDPolicy.swift" \
+    "$project_dir/Tests/TeamBundleIDPolicyTests.swift" -o "$test_temp/policy-tests"
 "$test_temp/policy-tests" > "$test_temp/swift-policy.json"
 xcrun python3 - <<'PY'
 import importlib.util,json,os
@@ -42,8 +54,9 @@ spec=importlib.util.spec_from_file_location('installer',root/'Backend/installer.
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 values=json.loads((Path(os.environ['XCODE_IPA_TEMP'])/'swift-policy.json').read_text())
 for v in values:
-    assert m.team_bundle_id(v['original'],v['team'])==v['bundleID']
-print('Swift/Python team-suffix parity: 3 vectors passed, invalid-input guards passed')
+    actual=(m.external_bundle_id(v['original'],v['pattern']) if 'pattern' in v else m.team_bundle_id(v['original'],v['team']))
+    assert actual==v['bundleID']
+print('Swift/Python identifier parity: 3 team-suffix and 4 imported-profile vectors passed')
 PY
 localization_app="$test_temp/LocalizationTests.app"
 mkdir -p "$localization_app/Contents/MacOS" "$localization_app/Contents/Resources"

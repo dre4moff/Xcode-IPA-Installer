@@ -1,6 +1,6 @@
 # Xcode IPA Installer
 
-A native macOS app for signing IPAs and installing them on an iPhone with **accounts already signed in to Xcode**. Choose your account, team, and device. Signing happens on your Mac, without a remote anisette server.
+A native macOS app for signing IPAs and installing them on an iPhone with **accounts already signed in to Xcode** or **imported P12 certificates and provisioning profiles**. Every code component is signed locally, without a remote anisette server.
 
 **[Download](https://github.com/dre4moff/Xcode-IPA-Installer/releases/latest)** · **[Setup guide](docs/SETUP.md)** · [Italiano](README.it.md) · [MIT license](LICENSE)
 
@@ -17,6 +17,20 @@ A native macOS app for signing IPAs and installing them on an iPhone with **acco
 The app supports **macOS 12 and later on Apple Silicon and Intel** with a universal binary. Use a full Xcode version that supports your macOS and iPhone’s iOS version. Modern devices use `devicectl` from Xcode 15 or later. Older Xcode versions use `xcdevice` for discovery and an independently installed [ios-deploy](https://github.com/ios-control/ios-deploy) for installation on **iOS 16 or earlier over USB**. Install that optional tool with `brew install ios-deploy`, or use **Sign only**. An older Mac/Xcode cannot deploy to a newer iPhone simply by using this fallback. [Apple’s Xcode compatibility table](https://developer.apple.com/xcode/system-requirements)
 
 Builds are signed ad hoc and are not notarized. If macOS blocks the download, verify its source and follow [Apple’s instructions for opening a trusted app](https://support.apple.com/en-us/102445).
+
+## Imported certificates and paid profiles
+
+Choose **Signing → Imported certificate → Import certificate…**. Select a folder containing a `.p12` / `.pfx` and `.mobileprovision` files, or choose them individually. Enter the P12 password in the app, leaving it empty if none. Text files in the folder are never read. Certificate/profile matching is validated before the private key is imported into the macOS default Keychain. The password is passed through a private pipe and is not saved. Handle any macOS Keychain prompt personally.
+
+Select the certificate and **Main app profile**. Use **Manage certificate → Add profiles…** for extension profiles belonging to that certificate. **Forget certificate** removes the app’s profile copies and metadata; the signing identity remains in Keychain Access because it may be shared with other tools. The original files are untouched.
+
+- **Exact App IDs:** the main app must use the identifier authorized by the selected profile. Extensions need profiles authorizing their derived identifiers. One exact main-app profile cannot authorize arbitrary extensions.
+- **Wildcard profiles:** compatible original identifiers are retained; an incompatible original is placed beneath the profile’s allowed prefix. A matching wildcard may cover multiple processes, subject to its capabilities.
+- The certificate, private key, team, expiry, device coverage, App ID, and requested capabilities must match for every app/extension. Missing authorization stops signing before installation. Store profiles from different certificates separately.
+- Increased Memory Limit is required on the main app when its checkbox is on. Original EVA is retained only when authorized by that process’s profile. Auxiliary processes remain signed without memory entitlements.
+- `get-task-allow` follows **each actual provisioning profile**, including profiles that permit debugging. This preserves eligibility for a compatible JIT tool; it does not enable JIT by itself or turn a distribution profile into a development profile. Device, OS, app, pairing, and the chosen JIT method still matter. [Apple’s provisioning-profile documentation](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)
+
+No Apple Account sign-in or remote anisette service is used in this mode, and the app does not request new profiles from Apple. Full Xcode is still needed for the bundled Python runtime and device tools. Expiry, device limits, revocation, and supported capabilities come from the imported assets. The verification report records `signingMode: imported`, `bundleIDPolicy: importedProfileAuthorization`, the certificate fingerprint, profile UUIDs, and each process’s debugging/EVA status.
 
 ## Interface and languages
 
@@ -39,9 +53,9 @@ These entitlements do not add physical RAM. iOS and the device determine the act
 
 The app reads account metadata from Xcode preferences and selects the team with `DEVELOPMENT_TEAM`. If the same team is associated with multiple signed-in accounts, signing stops because a Team ID alone cannot select a specific member account unambiguously. Distinct Personal Teams can be selected separately.
 
-Passwords, OTPs, session tokens, and private keys are not imported or exported. Xcode handles its session, and codesign uses the macOS Keychain. Xcode still contacts Apple for App IDs, certificates, devices, and provisioning profiles when required. External P12/provisioning-profile import is not implemented.
+In Xcode mode, passwords, OTPs, session tokens, and private keys are not read from Xcode. Xcode handles its session, and codesign uses the macOS Keychain. Xcode still contacts Apple for App IDs, certificates, devices, and provisioning profiles when required. In imported-certificate mode, only the explicitly selected P12 is imported via native Security APIs; its password is not retained. App-owned profile copies and certificate metadata are stored under `Signing Assets` in the local support directory.
 
-The main Bundle ID is **the original ID plus the selected signing Team ID**, such as `com.example.App.ABCDEFGHIJ`. An existing matching suffix is not duplicated. Extensions follow the main identifier, for example `com.example.App.ABCDEFGHIJ.Widget`. The backend calculates this independently and verifies team/profile/signature consistency for every process. The report records `bundleIDPolicy: selectedTeamSuffix`.
+In **Xcode mode**, the main Bundle ID is **the original ID plus the selected signing Team ID**, such as `com.example.App.ABCDEFGHIJ`. An existing matching suffix is not duplicated. Extensions follow the main identifier, for example `com.example.App.ABCDEFGHIJ.Widget`. The backend calculates this independently and verifies team/profile/signature consistency for every process. The report records `bundleIDPolicy: selectedTeamSuffix`.
 
 Updating an existing app requires the same complete Bundle ID and a compatible signature. A copy using another identifier remains a separate app; data is not migrated between IDs. Apple must authorize the resulting identifier for your team.
 
@@ -60,7 +74,7 @@ zsh test.sh
 zsh build.sh "$HOME/Downloads/Xcode-IPA-Installer-build"
 ```
 
-`build.sh` creates an ad-hoc signed app and refuses to overwrite an existing destination. `test.sh` builds unsigned iOS fixtures, exercises real local ad-hoc signing, checks team-suffix parity between Swift/Python, and verifies English, Italian, and unsupported-language fallback in a real resource bundle. Apple provisioning and device installation are intercepted: **tests do not sign in with real accounts or install anything on an iPhone**. Both scripts clean their working directories.
+`build.sh` creates an ad-hoc signed app and refuses to overwrite an existing destination. `test.sh` builds unsigned iOS fixtures, exercises real local ad-hoc signing for Xcode and imported-profile paths, checks identifier policy parity between Swift/Python, validates a synthetic password-protected P12 in isolated temporary keychains, and verifies English, Italian, and unsupported-language fallback in a real resource bundle. Apple provisioning and device installation are intercepted: **tests do not sign in with real accounts or install anything on an iPhone**. Both scripts clean their working directories.
 
 Build checks and offline tests do not establish physical-device acceptance or runtime compatibility with every supported macOS version.
 

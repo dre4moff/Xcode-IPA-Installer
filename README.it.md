@@ -1,6 +1,6 @@
 # Xcode IPA Installer
 
-App macOS nativa per firmare IPA e installarle su iPhone con gli **account già autenticati in Xcode**. Seleziona account, team e dispositivo, poi firma sul Mac senza server anisette esterni.
+App macOS nativa per firmare IPA e installarle su iPhone con gli **account già autenticati in Xcode** oppure **certificati P12 e profili importati**. Seleziona account, team e dispositivo, poi firma sul Mac senza server anisette esterni.
 
 [English](README.md) · **[Scarica l’app](https://github.com/dre4moff/Xcode-IPA-Installer/releases/latest)** · **[Guida alla configurazione](docs/SETUP.it.md)** · [Licenza MIT](LICENSE)
 
@@ -15,6 +15,18 @@ App macOS nativa per firmare IPA e installarle su iPhone con gli **account già 
 5. Scegli l’IPA. Attiva **Increased Memory Limit** se necessario, poi usa **Solo firma** o **Firma e installa**.
 
 Il download contiene un’app universale **Apple Silicon e Intel**, per macOS 12 o successivo. Con Xcode 15+ si usa `devicectl`. Con Xcode precedente si usa `xcdevice` e, per installare via USB su iOS 16 o precedenti, `ios-deploy` installato separatamente con `brew install ios-deploy`. L’esportazione con Solo firma non richiede questo strumento. Per iOS 17+ serve una combinazione compatibile di Xcode e macOS. La build è firmata ad hoc e non è notarizzata. Se macOS la blocca, verifica l’origine del download e segui la [procedura Apple per aprire un’app attendibile](https://support.apple.com/en-us/102445), con l’eventuale pulsante **Apri comunque** in Impostazioni di Sistema → Privacy e sicurezza.
+
+## Certificati e profili importati
+
+In **Firma → Certificato importato → Importa certificato…**, scegli la cartella con il `.p12` / `.pfx` e i `.mobileprovision`, oppure seleziona i file singolarmente. Inserisci la password del P12 nell’app; lasciala vuota se assente. I file di testo non vengono letti. La chiave privata viene importata nel Portachiavi predefinito del Mac dopo la verifica di corrispondenza con i profili. La password passa attraverso una pipe privata e non viene salvata. Gestisci personalmente le eventuali richieste del Portachiavi.
+
+Scegli certificato e **Profilo dell’app principale**. Dal menu di gestione puoi **Aggiungere profili…** per le estensioni dello stesso certificato. **Rimuovi dalla lista** elimina solo metadati e copie dei profili dell’app; l’identità rimane in Accesso Portachiavi, perché può essere usata da altri strumenti. I file originali restano invariati.
+
+Un profilo con **App ID esatto** impone quell’identificativo. Le estensioni richiedono profili compatibili con i rispettivi identificativi derivati; il solo profilo esatto del principale non le autorizza. Un profilo **wildcard** mantiene gli ID originali compatibili o li colloca sotto il prefisso autorizzato, e può coprire più processi se le capability lo consentono. Se manca un permesso o un profilo, la firma si ferma prima dell’installazione.
+
+Increased Memory Limit resta obbligatorio sul principale quando attivo; EVA originale viene mantenuta se autorizzata. `get-task-allow` segue il profilo di ciascun processo, anche quando consente il debug. Può quindi essere mantenuta la compatibilità con strumenti JIT adatti, senza forzare un profilo di distribuzione a consentirlo. JIT richiede anche dispositivo, sistema, app e metodo compatibili. [Documentazione Apple](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)
+
+Questa modalità non usa account Apple o anisette remoto e non richiede nuovi profili ad Apple. Serve ancora Xcode completo per Python e gli strumenti dei dispositivi. Scadenze, dispositivi, revoche e permessi dipendono dai file importati. Il rapporto riporta modalità, fingerprint del certificato, UUID dei profili e stato debug/EVA per ogni processo.
 
 ## Interfaccia e lingue
 
@@ -37,9 +49,9 @@ Non importa password, OTP o token da Xcode e non esporta chiavi private. Xcode g
 
 L’IPA sorgente resta invariata. L’IPA firmata e un rapporto `.verification.json` vengono salvati in **Download**, anche con **Firma e installa**. Il rapporto elenca componenti, team, capability memoria e scadenze. I file di lavoro e DerivedData temporanei vengono rimossi al termine o all’annullamento. I log restano disponibili tramite **Apri log**.
 
-I dati locali si trovano in `~/Library/Application Support/Xcode IPA Installer`, oppure `~/.local/share/XcodeIPAInstaller` se la prima posizione non è scrivibile. `accounts.json` conserva le associazioni dei team. I log e i rapporti possono contenere nomi account, Team ID, identificativi dispositivi e percorsi: controllali prima di condividerli.
+I dati locali si trovano in `~/Library/Application Support/Xcode IPA Installer`, oppure `~/.local/share/XcodeIPAInstaller` se la prima posizione non è scrivibile. `accounts.json` conserva le associazioni dei team. `Signing Assets` contiene metadati dei certificati e copie dei profili importati; le chiavi private restano nel Portachiavi e la password del P12 non viene conservata. I log e i rapporti possono contenere nomi account, Team ID, identificativi dispositivi e percorsi: controllali prima di condividerli.
 
-**Dalla versione 1.0.5 il Bundle ID principale è quello originale più il suffisso del team di firma selezionato**: `com.example.App.ABCDEFGHIJ`. Se termina già con il Team ID corretto, non viene duplicato. Non vengono aggiunti prefissi o identificativi del Mac. Gli identificativi delle estensioni e delle app incorporate seguono il nuovo principale: ad esempio `com.example.App.ABCDEFGHIJ.Widget`. L’interfaccia mostra l’ID di firma in sola lettura e lo aggiorna quando cambi team.
+**In modalità Xcode, dalla versione 1.0.5 il Bundle ID principale è quello originale più il suffisso del team di firma selezionato**: `com.example.App.ABCDEFGHIJ`. Se termina già con il Team ID corretto, non viene duplicato. Non vengono aggiunti prefissi o identificativi del Mac. Gli identificativi delle estensioni e delle app incorporate seguono il nuovo principale: ad esempio `com.example.App.ABCDEFGHIJ.Widget`. L’interfaccia mostra l’ID di firma in sola lettura e lo aggiorna quando cambi team.
 
 Il suffisso deriva dal team associato all’account Xcode selezionato. Il backend lo calcola indipendentemente dall’interfaccia, rifiuta un ID non corrispondente e verifica team, profilo e firma di ogni processo. Il rapporto registra `bundleIDPolicy: selectedTeamSuffix`, oltre a ID originali e finali. Le relazioni tra i componenti vengono aggiornate coerentemente; gli altri metadati vengono conservati.
 
@@ -56,7 +68,7 @@ zsh test.sh
 zsh build.sh "$HOME/Downloads/Xcode-IPA-Installer-build"
 ```
 
-`build.sh` crea una nuova `Xcode IPA Installer.app` arm64 firmata ad hoc; rifiuta di sovrascrivere un’app già presente. `test.sh` compila fixture iOS con firma disabilitata e verifica il backend con firme ad hoc reali, controllando suffisso del team, relazioni tra componenti, metadati e parità della policy Swift/Python. Il provisioning Apple e l’installazione sono sostituiti da fixture: **i test non usano account reali e non installano nulla sull’iPhone**. Entrambi gli script puliscono i propri file temporanei.
+`build.sh` crea una nuova `Xcode IPA Installer.app` universale Apple Silicon e Intel firmata ad hoc; rifiuta di sovrascrivere un’app già presente. `test.sh` compila fixture iOS con firma disabilitata e verifica il backend con firme ad hoc reali, controllando suffisso del team, relazioni tra componenti, metadati e parità della policy Swift/Python. Il provisioning Apple e l’installazione sono sostituiti da fixture: **i test non usano account reali e non installano nulla sull’iPhone**. Entrambi gli script puliscono i propri file temporanei.
 
 Sono coperti firma dei componenti annidati, policy principale-solo, EVA disponibile/non disponibile, conservazione delle altre capability e interruzione su profili o firme non conformi. Il collaudo con account Apple e dispositivo reale rimane separato dai test offline.
 

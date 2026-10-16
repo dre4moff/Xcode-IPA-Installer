@@ -601,7 +601,7 @@ def assert_profile(profile, team, bundle_id, udid, memory):
     if not isinstance(expiry, dt.datetime) or expiry.replace(tzinfo=dt.timezone.utc) <= dt.datetime.now(dt.timezone.utc):
         raise InstallerError(tr('The provisioning profile has expired.'))
     if memory and ent.get(MEMORY) is not True:
-        raise InstallerError(tr('Xcode did not authorize Increased Memory Limit for the selected team. Installation stopped.'))
+        raise InstallerError(tr('The selected profile does not authorize Increased Memory Limit. Signing stopped.'))
 
 
 def assert_signature(actual, team, app_identifier, memory):
@@ -655,6 +655,210 @@ def identity_for_profile(profile, identities_output):
     raise InstallerError(tr('The certificate authorized by the profile has no available signing key. Check your accounts in Xcode.'))
 
 
+def assets_directory():
+    return SUPPORT / "Signing Assets"
+
+
+def asset_directory(identifier):
+    if not re.fullmatch(r"[0-9A-F]{40}", str(identifier)):
+        raise InstallerError(tr('Invalid imported certificate identifier.'))
+    return assets_directory() / identifier
+
+
+def profile_pattern(profile):
+    prefixes = profile.get("ApplicationIdentifierPrefix", [])
+    value = profile.get("Entitlements", {}).get("application-identifier", "")
+    if not prefixes or not value.startswith(prefixes[0] + "."):
+        raise InstallerError(tr('The imported profile has an invalid App ID prefix.'))
+    pattern = value[len(prefixes[0]) + 1:]
+    # Apple App ID wildcards are terminal, not general-purpose glob expressions.
+    if not (valid_bundle_id(pattern) or pattern == "*" or
+            (pattern.endswith(".*") and valid_bundle_id(pattern[:-2]))):
+        raise InstallerError(tr('The imported profile has an invalid app identifier.'))
+    return pattern
+
+
+def certificate_hashes(profile):
+    return {hashlib.sha1(c).hexdigest().upper() for c in profile.get("DeveloperCertificates", [])}
+
+
+def profile_summary(path, profile):
+    pattern = profile_pattern(profile)
+    ent = profile.get("Entitlements", {})
+    teams = profile.get("TeamIdentifier", [])
+    if (len(teams) != 1 or not re.fullmatch(r"[A-Z0-9]{10}", str(teams[0])) or
+            ent.get("com.apple.developer.team-identifier") != teams[0] or
+            not isinstance(profile.get("ExpirationDate"), dt.datetime) or not certificate_hashes(profile)):
+        raise InstallerError(tr('The imported profile is missing valid team, certificate, or expiry information.'))
+    return dict(id=hashlib.sha256(path.read_bytes()).hexdigest(), name=str(profile.get("Name", path.stem)),
+                bundlePattern=pattern, team=profile["TeamIdentifier"][0],
+                expires=profile["ExpirationDate"].isoformat(), memory=ent.get(MEMORY) is True,
+                eva=ent.get(EVA) is True, debug=ent.get("get-task-allow") is True,
+                allDevices=bool(profile.get("ProvisionsAllDevices")), deviceCount=len(profile.get("ProvisionedDevices", [])))
+
+
+def load_signing_assets():
+    result = []
+    for path in sorted(assets_directory().glob("*/certificate.json")):
+        try:
+            value = json.loads(path.read_text())
+            if path.parent != asset_directory(value["id"]): continue
+            profiles = []
+            for p in sorted(path.parent.glob("Profiles/*.mobileprovision")):
+                profiles.append(profile_summary(p, decode_profile(p)))
+            result.append(dict(value, profiles=profiles))
+        except (OSError, ValueError, KeyError, TypeError, InstallerError):
+            continue
+    return result
+
+
+def certificate_tool(path, password, expected):
+    global ACTIVE_PROCESS
+    helper = Path(__file__).parent.parent / "MacOS/CertificateTool"
+    if not helper.is_file():
+        raise InstallerError(tr('The certificate import helper is missing. Rebuild or reinstall the app.'))
+    # A private pipe, never command arguments, environment variables, or a log file.
+    request = json.dumps(dict(path=str(path), password=password, expected=sorted(expected))).encode()
+    child = subprocess.Popen([str(helper)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+    ACTIVE_PROCESS = child
+    try:
+        try:
+            output = child.communicate(input=request, timeout=120)[0]
+        except subprocess.TimeoutExpired:
+            os.killpg(child.pid, signal.SIGTERM); child.communicate()
+            raise InstallerError(tr('Certificate import timed out. Check any macOS Keychain prompt and try again.'))
+        if CANCELLED: raise InstallerError(tr('Operation cancelled.'))
+    finally:
+        ACTIVE_PROCESS = None
+    value = json.loads(output)
+    if child.returncode:
+        code = value.get("error")
+        if code == "p12Import":
+            raise InstallerError(tr('Cannot open the P12. Check its password and that it contains a certificate with a private key.'))
+        if code == "profileCertificateMismatch":
+            raise InstallerError(tr('The certificate does not match the selected provisioning profiles.'))
+        if code == "certificateExpired":
+            raise InstallerError(tr('The signing certificate has expired or is not valid yet.'))
+        raise InstallerError(tr('Certificate import failed. Check the file and any macOS Keychain prompt. Security status: ') + str(value.get("status")))
+    return value
+
+
+def private_write(path, data):
+    descriptor, temporary = tempfile.mkstemp(prefix=".import-", dir=str(path.parent))
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(data)
+        os.replace(temporary, str(path))
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
+
+
+def import_signing_assets(config):
+    paths = [Path(p) for p in config.get("profiles", [])]
+    if not paths:
+        raise InstallerError(tr('Choose at least one mobileprovision file.'))
+    profiles = [decode_profile(p) for p in paths]
+    expected = None
+    teams = set()
+    for path, profile in zip(paths, profiles):
+        profile_summary(path, profile)  # Structural validation before importing any key.
+        teams.add(profile["TeamIdentifier"][0])
+        certificates = certificate_hashes(profile)
+        expected = certificates if expected is None else expected.intersection(certificates)
+    if not expected or len(teams) != 1:
+        raise InstallerError(tr('These profiles must share one signing certificate and team. Import other certificates separately.'))
+    if config.get("certificate"):
+        directory = asset_directory(config["certificate"])
+        value = json.loads((directory / "certificate.json").read_text())
+        if value["id"] not in expected or value["team"] not in teams:
+            raise InstallerError(tr('The certificate does not match the selected provisioning profiles.'))
+    else:
+        value = certificate_tool(Path(config["p12"]), config.get("password", ""), expected)
+        value["team"] = next(iter(teams))
+        directory = asset_directory(value["id"])
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory.chmod(0o700)
+    target = directory / "Profiles"; target.mkdir(exist_ok=True, mode=0o700)
+    target.chmod(0o700)
+    for path in paths:
+        data = path.read_bytes()
+        dest = target / (hashlib.sha256(data).hexdigest() + ".mobileprovision")
+        private_write(dest, data)
+    metadata = directory / "certificate.json"
+    private_write(metadata, (json.dumps(value, indent=2) + "\n").encode())
+    emit("assets", certificates=load_signing_assets(), selected=value["id"])
+
+
+def external_bundle_id(original, pattern):
+    if not valid_bundle_id(original): raise InstallerError(tr('Invalid original app identifier.'))
+    if pattern == "*" or fnmatch.fnmatchcase(original, pattern): return original
+    value = pattern[:-1] + original if pattern.endswith(".*") else pattern
+    if not valid_bundle_id(value): raise InstallerError(tr('The profile cannot produce a valid app identifier.'))
+    return value
+
+
+def external_context(config):
+    directory = asset_directory(config["certificate"])
+    value = json.loads((directory / "certificate.json").read_text())
+    if not re.fullmatch(r"[0-9a-f]{64}", str(config.get("profile", ""))):
+        raise InstallerError(tr('Choose the main app provisioning profile.'))
+    main = directory / "Profiles" / (config["profile"] + ".mobileprovision")
+    records = [(p, decode_profile(p)) for p in sorted(directory.glob("Profiles/*.mobileprovision"))]
+    chosen = next(((p, data) for p, data in records if p == main), None)
+    if not chosen: raise InstallerError(tr('The selected provisioning profile is no longer available.'))
+    return value, records, chosen
+
+
+def external_effective(profile, requested, team, bundle_id):
+    prefix = profile["ApplicationIdentifierPrefix"][0] + "."
+    def expand(value):
+        if isinstance(value, str):
+            return value.replace("$(AppIdentifierPrefix)", prefix).replace("$(TeamIdentifierPrefix)", team + ".").replace("$(PRODUCT_BUNDLE_IDENTIFIER)", bundle_id)
+        if isinstance(value, list): return [expand(v) for v in value]
+        if isinstance(value, dict): return {k: expand(v) for k, v in value.items()}
+        return value
+    result = expand(requested)
+    result.update({"application-identifier": prefix + bundle_id, "com.apple.developer.team-identifier": team})
+    authorized = profile["Entitlements"]
+    # The profile, not a certificate's marketing name or the original IPA, controls debugging.
+    if "get-task-allow" in authorized:
+        result["get-task-allow"] = authorized["get-task-allow"] is True
+    return result
+
+
+def prepare_external_units(units, mapping, records, chosen, certificate, team, device, memory, preserve):
+    for i, unit in enumerate(units):
+        unit["is_main"] = i == 0
+        unit["memory"] = memory and i == 0
+        unit["new_id"] = mapping[unit["old_id"]]
+        candidates = [chosen] if i == 0 else sorted(records, key=lambda r: ("*" in profile_pattern(r[1]), -len(profile_pattern(r[1])), str(r[0])))
+        failure = None
+        for path, profile in candidates:
+            try:
+                if certificate not in certificate_hashes(profile): continue
+                assert_profile(profile, team, unit["new_id"], device["udid"], unit["memory"])
+                allow_eva = profile["Entitlements"].get(EVA) is True
+                requested = requested_entitlements(unit["original"], mapping, team, unit["new_id"], unit["memory"],
+                    preserve=preserve, main_process=unit["is_main"], allow_eva=allow_eva)
+                effective = external_effective(profile, requested, team, unit["new_id"])
+                assert_capabilities(effective, profile, requested, unit["new_id"])
+                assert_signature(effective, team, effective["application-identifier"], unit["memory"])
+                assert_memory_scope(effective, unit["is_main"])
+                assert_eva_policy(effective, requested)
+                unit.update(profile=path, profile_data=profile, identity=certificate, requested=requested, effective=effective,
+                    app_identifier=effective["application-identifier"], expiry=profile["ExpirationDate"].isoformat(),
+                    eva_policy="authorizedByImportedProfile" if allow_eva else "unavailableInImportedProfile")
+                break
+            except InstallerError as error:
+                failure = error
+        else:
+            if i == 0 and failure:
+                raise InstallerError(unit["path"].name + ": " + str(failure))
+            raise InstallerError(tr('No compatible imported profile for ') + unit["new_id"] +
+                tr('. Import a matching extension profile or a wildcard profile for the same certificate. ') + (str(failure) if failure else ""))
+
+
 def pack_ipa(app, output):
     temporary = output.with_name(output.name + ".partial")
     if output.exists() or temporary.exists():
@@ -681,9 +885,20 @@ def pack_ipa(app, output):
 
 
 def sign_and_install(config):
-    team = str(config["team"]).upper()
-    account = selected_account_team(discover_accounts(), config["account"], team)
-    personal_team = next(t for t in account["teams"] if t["id"] == team).get("personal", False)
+    external = config.get("signingMode") == "imported"
+    records = chosen = None
+    if external:
+        certificate, records, chosen = external_context(config)
+        team = certificate["team"]
+        account = dict(name=certificate["name"])
+        personal_team = False
+        identities = run(["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"], quiet=True).decode()
+        if certificate["id"] not in re.findall(r"\b[0-9A-F]{40}\b", identities.upper()):
+            raise InstallerError(tr('The imported signing identity is unavailable or expired. Check its private key and trust chain in Keychain Access.'))
+    else:
+        team = str(config["team"]).upper()
+        account = selected_account_team(discover_accounts(), config["account"], team)
+        personal_team = next(t for t in account["teams"] if t["id"] == team).get("personal", False)
     env = xcode_environment()
     device = next((d for d in discover_devices(env) if d["id"] == config["device"]), None)
     if not device or not device["udid"]:
@@ -692,14 +907,15 @@ def sign_and_install(config):
         legacy_installer(device)  # Check compatibility before any provisioning changes.
     metadata = inspect_ipa(config["ipa"])
     memory = bool(config.get("memory", False))
-    new_id = team_bundle_id(metadata["bundleID"], team)
-    if config.get("bundleID", new_id) != new_id:
+    new_id = (external_bundle_id(metadata["bundleID"], profile_pattern(chosen[1])) if external
+              else team_bundle_id(metadata["bundleID"], team))
+    if not external and config.get("bundleID", new_id) != new_id:
         raise InstallerError(tr('The identifier must match the IPA identifier plus the selected signing team suffix.'))
     SUPPORT.mkdir(parents=True, exist_ok=True, mode=0o700)
     logs = SUPPORT / "Logs"; logs.mkdir(exist_ok=True, mode=0o700)
     log = logs / (dt.datetime.now().strftime("%Y%m%d-%H%M%S") + ".log"); log.touch(mode=0o600)
     emit("logfile", path=str(log))
-    emit("log", message="Team " + team + " · Bundle ID " + new_id + tr(' (signing team suffix)'))
+    emit("log", message="Team " + team + " · Bundle ID " + new_id + (tr(' (imported profile)') if external else tr(' (signing team suffix)')))
     with tempfile.TemporaryDirectory(prefix="xcode-ipa-sign-") as temp:
         work = Path(temp)
         emit("phase", message=tr('Preparing the IPA'), progress=0.05)
@@ -714,8 +930,17 @@ def sign_and_install(config):
             binary = bundle_executable(bundle, info)
             check_encryption(binary)
             units.append(dict(path=bundle, info=info, old_id=info["CFBundleIdentifier"], original=entitlements_of(bundle)))
-        mapping = team_bundle_mapping([u["old_id"] for u in units], metadata["bundleID"], team)
-        for unit in units:
+        if external:
+            old_root = metadata["bundleID"]
+            original_bundle_ids([u["old_id"] for u in units])
+            mapping = {u["old_id"]: new_id + (u["old_id"][len(old_root):] if u["old_id"].startswith(old_root + ".")
+                       else "" if u["old_id"] == old_root else "." + u["old_id"]) for u in units}
+            original_bundle_ids(list(mapping.values()))
+            prepare_external_units(units, mapping, records, chosen, certificate["id"], team, device, memory,
+                                   bool(config.get("preserveCapabilities", True)))
+        else:
+            mapping = team_bundle_mapping([u["old_id"] for u in units], metadata["bundleID"], team)
+        for unit in ([] if external else units):
             unit["is_main"] = unit["path"] == root
             unit["memory"] = memory and unit["is_main"]
             unit["new_id"] = mapping[unit["old_id"]]
@@ -728,53 +953,54 @@ def sign_and_install(config):
         emit("log", message="Increased Memory Limit: " + (tr('only ') + root.name if memory else tr('off')) + tr('; every component is still included in signing.'))
         if personal_team:
             emit("log", message=tr('Extended Virtual Addressing: excluded, unavailable for Personal Teams. Increased Memory Limit stays independent.'))
-        project = write_project(work / "Provisioning", units, team)
-        for i, unit in enumerate(units):
-            emit("phase", message=tr('Xcode: profile ') + unit["path"].name, progress=0.12 + 0.50 * i / len(units))
-            args = ["/usr/bin/xcrun", "xcodebuild", "-project", project, "-scheme", unit["target"], "-configuration", "Debug",
-                    "-derivedDataPath", work / "DerivedData",
-                    "-sdk", "iphoneos", "-destination", "id=" + device["udid"], "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration",
-                    "SYMROOT=" + str(work / "Products"), "OBJROOT=" + str(work / "Objects"), "COMPILER_INDEX_STORE_ENABLE=NO",
-                    "CLANG_MODULE_CACHE_PATH=" + str(work / "Modules"), "MODULE_CACHE_DIR=" + str(work / "Modules"),
-                    "SDK_STAT_CACHE_DIR=" + str(work / "SDKStatCaches"), "SHARED_PRECOMPS_DIR=" + str(work / "Precompiled"),
-                    "DEVELOPMENT_TEAM=" + team, "build"]
-            try:
-                run(args, env=env, log=log, timeout=600)
-            except InstallerError as error:
-                if EVA not in unit["requested"] or not eva_unavailable(error):
-                    raise
-                # Capability availability belongs to the selected team, not the IPA name.
-                # Change only EVA; the required memory entitlement and all other capabilities stay.
-                unit["requested"].pop(EVA)
-                unit["eva_policy"] = "unavailableForTeam"
-                (project.parent / (unit["target"] + ".entitlements")).write_bytes(plistlib.dumps(unit["requested"]))
-                emit("log", message=tr('Xcode did not authorize Extended Virtual Addressing for this team. Retrying without EVA, keeping Increased Memory Limit and all other requested capabilities.'))
-                run(args, env=env, log=log, timeout=600)
-            product = work / "Products/Debug-iphoneos" / unit["product"]
-            profile_path = product / "embedded.mobileprovision"
-            if not profile_path.exists():
-                raise InstallerError(tr('Xcode did not generate a profile for ') + unit["new_id"])
-            profile = decode_profile(profile_path)
-            assert_profile(profile, team, unit["new_id"], device["udid"], unit["memory"])
-            identities = run(["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"], quiet=True).decode()
-            unit["identity"] = identity_for_profile(profile, identities)
-            unit["profile"] = profile_path
-            unit["profile_data"] = profile
-            unit["app_identifier"] = profile.get("ApplicationIdentifierPrefix", [team])[0] + "." + unit["new_id"]
-            unit["effective"] = entitlements_of(product)
-            if not unit["effective"]:
-                raise InstallerError(tr('Xcode did not generate signing entitlements.'))
-            if not unit["is_main"]:
-                for key in MEMORY_ENTITLEMENTS: unit["effective"].pop(key, None)
-            elif not unit["memory"]:
-                unit["effective"].pop(MEMORY, None)
-            if EVA not in unit["requested"]:
-                unit["effective"].pop(EVA, None)
-            assert_signature(unit["effective"], team, unit["app_identifier"], unit["memory"])
-            assert_memory_scope(unit["effective"], unit["is_main"])
-            assert_eva_policy(unit["effective"], unit["requested"])
-            assert_capabilities(unit["effective"], profile, unit["requested"], unit["new_id"])
-            unit["expiry"] = profile["ExpirationDate"].isoformat()
+        if not external:
+            project = write_project(work / "Provisioning", units, team)
+            for i, unit in enumerate(units):
+                emit("phase", message=tr('Xcode: profile ') + unit["path"].name, progress=0.12 + 0.50 * i / len(units))
+                args = ["/usr/bin/xcrun", "xcodebuild", "-project", project, "-scheme", unit["target"], "-configuration", "Debug",
+                        "-derivedDataPath", work / "DerivedData",
+                        "-sdk", "iphoneos", "-destination", "id=" + device["udid"], "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration",
+                        "SYMROOT=" + str(work / "Products"), "OBJROOT=" + str(work / "Objects"), "COMPILER_INDEX_STORE_ENABLE=NO",
+                        "CLANG_MODULE_CACHE_PATH=" + str(work / "Modules"), "MODULE_CACHE_DIR=" + str(work / "Modules"),
+                        "SDK_STAT_CACHE_DIR=" + str(work / "SDKStatCaches"), "SHARED_PRECOMPS_DIR=" + str(work / "Precompiled"),
+                        "DEVELOPMENT_TEAM=" + team, "build"]
+                try:
+                    run(args, env=env, log=log, timeout=600)
+                except InstallerError as error:
+                    if EVA not in unit["requested"] or not eva_unavailable(error):
+                        raise
+                    # Capability availability belongs to the selected team, not the IPA name.
+                    # Change only EVA; the required memory entitlement and all other capabilities stay.
+                    unit["requested"].pop(EVA)
+                    unit["eva_policy"] = "unavailableForTeam"
+                    (project.parent / (unit["target"] + ".entitlements")).write_bytes(plistlib.dumps(unit["requested"]))
+                    emit("log", message=tr('Xcode did not authorize Extended Virtual Addressing for this team. Retrying without EVA, keeping Increased Memory Limit and all other requested capabilities.'))
+                    run(args, env=env, log=log, timeout=600)
+                product = work / "Products/Debug-iphoneos" / unit["product"]
+                profile_path = product / "embedded.mobileprovision"
+                if not profile_path.exists():
+                    raise InstallerError(tr('Xcode did not generate a profile for ') + unit["new_id"])
+                profile = decode_profile(profile_path)
+                assert_profile(profile, team, unit["new_id"], device["udid"], unit["memory"])
+                identities = run(["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"], quiet=True).decode()
+                unit["identity"] = identity_for_profile(profile, identities)
+                unit["profile"] = profile_path
+                unit["profile_data"] = profile
+                unit["app_identifier"] = profile.get("ApplicationIdentifierPrefix", [team])[0] + "." + unit["new_id"]
+                unit["effective"] = entitlements_of(product)
+                if not unit["effective"]:
+                    raise InstallerError(tr('Xcode did not generate signing entitlements.'))
+                if not unit["is_main"]:
+                    for key in MEMORY_ENTITLEMENTS: unit["effective"].pop(key, None)
+                elif not unit["memory"]:
+                    unit["effective"].pop(MEMORY, None)
+                if EVA not in unit["requested"]:
+                    unit["effective"].pop(EVA, None)
+                assert_signature(unit["effective"], team, unit["app_identifier"], unit["memory"])
+                assert_memory_scope(unit["effective"], unit["is_main"])
+                assert_eva_policy(unit["effective"], unit["requested"])
+                assert_capabilities(unit["effective"], profile, unit["requested"], unit["new_id"])
+                unit["expiry"] = profile["ExpirationDate"].isoformat()
         emit("phase", message=tr('Signing locally with team ') + team, progress=0.68)
         for path in sorted(root.rglob("_CodeSignature"), key=lambda p: len(p.parts), reverse=True):
             if path.is_dir() and not path.is_symlink():
@@ -802,6 +1028,8 @@ def sign_and_install(config):
                 assert_memory_scope(actual, unit["is_main"])
                 assert_eva_policy(actual, unit["requested"])
                 assert_capabilities(actual, unit["profile_data"], unit["requested"], unit["new_id"])
+                if external and actual.get("get-task-allow", False) != unit["effective"].get("get-task-allow", False):
+                    raise InstallerError(tr('The final debugging entitlement does not match the imported profile.'))
         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "--verbose=2", root], log=log)
         emit("phase", message=tr('Verifying and exporting the signed IPA'), progress=0.82)
         output_dir = Path(config.get("outputDirectory") or str(Path.home() / "Downloads"))
@@ -811,12 +1039,16 @@ def sign_and_install(config):
         pack_ipa(root, output)
         report_path = output.with_suffix(".verification.json")
         report_path.write_text(json.dumps(dict(team=team, account=account["name"], personalTeam=personal_team,
-            memoryRequested=memory, memoryScope="mainExecutableOnly", extendedVirtualAddressingPolicy="automaticForTeam", bundleIDPolicy="selectedTeamSuffix",
+            memoryRequested=memory, memoryScope="mainExecutableOnly", extendedVirtualAddressingPolicy="importedProfile" if external else "automaticForTeam",
+            signingMode="imported" if external else "xcode", certificateSHA1=certificate["id"] if external else None,
+            bundleIDPolicy="importedProfileAuthorization" if external else "selectedTeamSuffix",
             codeComponents=[dict(path=str(p.relative_to(root.parent)), kind="app/extension" if unit else "library/bundle", signatureVerified=True) for p,unit in plan],
             processes=[dict(bundleID=u["new_id"], originalBundleID=u["old_id"], bundleIDVerified=True,
                             team=team, mainExecutable=u["is_main"], memoryRequested=u["memory"],
                             memoryVerified=u["memory"], memoryPolicyVerified=True, expires=u["expiry"],
                             extendedVirtualAddressing=u["effective"].get(EVA, False), evaDecision=u["eva_policy"],
+                            debuggingAllowed=u["effective"].get("get-task-allow", False),
+                            profileUUID=u["profile_data"].get("UUID"),
                             excludedOriginalMemoryCapabilities=sorted(k for k in MEMORY_ENTITLEMENTS if k in u["original"] and k not in u["requested"]),
                             requestedCapabilities=sorted(u["requested"]), supportsLiveActivities=u["info"].get("NSSupportsLiveActivities"),
                             extensionPoint=u["info"].get("NSExtension",{}).get("NSExtensionPointIdentifier")) for u in units]), indent=2, ensure_ascii=False)+"\n")
@@ -830,16 +1062,27 @@ def sign_and_install(config):
 
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("command", choices=["discover", "inspect", "save-account", "run"])
+    parser = argparse.ArgumentParser(); parser.add_argument("command", choices=["discover", "inspect", "save-account", "import-signing", "remove-signing", "run"])
     args = parser.parse_args()
     config = json.load(sys.stdin) if args.command != "discover" else {}
     try:
         if args.command == "discover":
             env = xcode_environment()
             version = run(["/usr/bin/xcrun", "xcodebuild", "-version"], env=env, quiet=True).decode().strip()
-            emit("discovery", accounts=discover_accounts(), devices=discover_devices(env), xcode=version)
+            try:
+                accounts = discover_accounts()
+            except InstallerError:
+                accounts = []
+            emit("discovery", accounts=accounts, devices=discover_devices(env), certificates=load_signing_assets(), xcode=version)
         elif args.command == "inspect":
             emit("ipa", **inspect_ipa(config["path"]))
+        elif args.command == "import-signing":
+            import_signing_assets(config)
+        elif args.command == "remove-signing":
+            # Forget only app-owned profile copies and metadata; shared Keychain identities remain.
+            directory = asset_directory(config["certificate"])
+            if directory.exists(): shutil.rmtree(directory)
+            emit("assets", certificates=load_signing_assets())
         elif args.command == "save-account":
             save_account(config); emit("saved")
         else:

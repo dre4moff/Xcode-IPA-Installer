@@ -14,6 +14,10 @@ enum TeamBundleIDPolicyTests {
         precondition(TeamBundleIDPolicy.make(original: "invalid", team: "ABCDEFGHIJ") == nil)
         precondition(TeamBundleIDPolicy.make(original: "com.example.App", team: "invalid") == nil)
         precondition(TeamBundleIDPolicy.make(original: "a." + String(repeating: "z", count: 250), team: "ABCDEFGHIJ") == nil)
+        for pattern in ["*", "com.example.*", "com.vendor.*", "com.vendor.Fixed"] {
+            results.append(["original": "com.example.App", "pattern": pattern,
+                            "bundleID": ImportedBundleIDPolicy.make(original: "com.example.App", pattern: pattern)])
+        }
         print(String(data: try JSONSerialization.data(withJSONObject: results), encoding: .utf8)!)
     }
 }
