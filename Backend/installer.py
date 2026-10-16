@@ -586,14 +586,16 @@ def decode_profile(path):
     return plistlib.loads(run(["/usr/bin/security", "cms", "-D", "-i", path], quiet=True))
 
 
-def assert_profile(profile, team, bundle_id, udid, memory):
+def assert_profile(profile, team, bundle_id, udid, memory, application_identifier=None):
     if team not in profile.get("TeamIdentifier", []):
         raise InstallerError(tr('The profile belongs to a different team from the one selected.'))
     ent = profile.get("Entitlements", {})
     if ent.get("com.apple.developer.team-identifier") != team:
         raise InstallerError(tr('The profile and entitlement teams do not match.'))
     prefix = profile.get("ApplicationIdentifierPrefix", [team])[0]
-    if not fnmatch.fnmatchcase(prefix + "." + bundle_id, ent.get("application-identifier", "")):
+    claimed = application_identifier if application_identifier is not None else prefix + "." + bundle_id
+    if (not isinstance(claimed, str) or not claimed.startswith(prefix + ".") or "*" in claimed or
+            not fnmatch.fnmatchcase(claimed, ent.get("application-identifier", ""))):
         raise InstallerError(tr('The profile does not authorize this app identifier.'))
     if not profile.get("ProvisionsAllDevices") and udid not in profile.get("ProvisionedDevices", []):
         raise InstallerError(tr('The profile does not include the selected iPhone.'))
@@ -673,7 +675,8 @@ def profile_pattern(profile):
     pattern = value[len(prefixes[0]) + 1:]
     # Apple App ID wildcards are terminal, not general-purpose glob expressions.
     if not (valid_bundle_id(pattern) or pattern == "*" or
-            (pattern.endswith(".*") and valid_bundle_id(pattern[:-2]))):
+            (pattern.endswith(".*") and len(pattern) <= 255 and
+             re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*", pattern[:-2]))):
         raise InstallerError(tr('The imported profile has an invalid app identifier.'))
     return pattern
 
@@ -790,12 +793,28 @@ def import_signing_assets(config):
     emit("assets", certificates=load_signing_assets(), selected=value["id"])
 
 
-def external_bundle_id(original, pattern):
+def external_bundle_id(original):
     if not valid_bundle_id(original): raise InstallerError(tr('Invalid original app identifier.'))
-    if not fnmatch.fnmatchcase(original, pattern):
-        raise InstallerError(tr('The imported profile authorizes ') + pattern + tr(', but the original app identifier is ') + original +
-            tr('. Import a matching or wildcard profile. Original Bundle IDs are never changed in imported-certificate mode.'))
     return original
+
+
+def imported_application_identifier(profile, bundle_id):
+    """Keep the code's Bundle ID independent of an imported profile's signing App ID.
+
+    Manual signers (Zsign/Feather) retain the profile's explicit application-identifier.
+    Wildcards are expanded to a concrete, authorized value without renaming the bundle.
+    Xcode provisioning keeps its existing strict Bundle ID/App ID correspondence.
+    """
+    pattern = profile_pattern(profile)
+    if "*" not in pattern:
+        identifier = pattern
+    elif fnmatch.fnmatchcase(bundle_id, pattern):
+        identifier = bundle_id
+    else:
+        identifier = pattern[:-1] + bundle_id
+    if not valid_bundle_id(identifier):
+        raise InstallerError(tr('The profile cannot produce a valid app identifier.'))
+    return profile["ApplicationIdentifierPrefix"][0] + "." + identifier
 
 
 def external_context(config):
@@ -819,7 +838,8 @@ def external_effective(profile, requested, team, bundle_id):
         if isinstance(value, dict): return {k: expand(v) for k, v in value.items()}
         return value
     result = expand(requested)
-    result.update({"application-identifier": prefix + bundle_id, "com.apple.developer.team-identifier": team})
+    result.update({"application-identifier": imported_application_identifier(profile, bundle_id),
+                   "com.apple.developer.team-identifier": team})
     authorized = profile["Entitlements"]
     # The profile, not a certificate's marketing name or the original IPA, controls debugging.
     if "get-task-allow" in authorized:
@@ -846,7 +866,7 @@ def compatible_capabilities(profile, requested, team, bundle_id, strict=False):
             retained = [v for v in value if entitlement_allowed(entries, [v])]
             if retained: result[key] = retained
         if key == "keychain-access-groups" and key not in result:
-            fallback = profile["ApplicationIdentifierPrefix"][0] + "." + bundle_id
+            fallback = imported_application_identifier(profile, bundle_id)
             if entitlement_allowed(authorized.get(key, []), [fallback]): result[key] = [fallback]
     return result, excluded
 
@@ -856,12 +876,19 @@ def prepare_external_units(units, mapping, records, chosen, certificate, team, d
         unit["is_main"] = i == 0
         unit["memory"] = memory and i == 0
         unit["new_id"] = mapping[unit["old_id"]]
-        candidates = [chosen] if i == 0 else sorted(records, key=lambda r: ("*" in profile_pattern(r[1]), -len(profile_pattern(r[1])), str(r[0])))
+        def profile_order(record):
+            pattern = profile_pattern(record[1])
+            matches = fnmatch.fnmatchcase(unit["new_id"], pattern)
+            return (not matches, not matches and record[0] != chosen[0], "*" in pattern, -len(pattern), str(record[0]))
+        # Prefer a process-specific match. Otherwise reuse the selected profile's
+        # authorized signing identity, while preserving every original Bundle ID.
+        candidates = [chosen] if i == 0 else sorted(records, key=profile_order)
         failure = None
         for path, profile in candidates:
             try:
                 if certificate not in certificate_hashes(profile): continue
-                assert_profile(profile, team, unit["new_id"], device["udid"], unit["memory"])
+                app_identifier = imported_application_identifier(profile, unit["new_id"])
+                assert_profile(profile, team, unit["new_id"], device["udid"], unit["memory"], application_identifier=app_identifier)
                 allow_eva = profile["Entitlements"].get(EVA) is True
                 requested = requested_entitlements(unit["original"], mapping, team, unit["new_id"], unit["memory"],
                     preserve=preserve, main_process=unit["is_main"], allow_eva=allow_eva)
@@ -877,6 +904,8 @@ def prepare_external_units(units, mapping, records, chosen, certificate, team, d
                     eva_policy="authorizedByImportedProfile" if allow_eva else "unavailableInImportedProfile")
                 if excluded:
                     emit("log", message=tr('Excluded unsupported capabilities for ') + unit["path"].name + ": " + ", ".join(excluded))
+                if not fnmatch.fnmatchcase(unit["new_id"], profile_pattern(profile)):
+                    emit("log", message=tr('Imported signing App ID: ') + app_identifier + tr('; original Bundle ID preserved: ') + unit["new_id"])
                 break
             except InstallerError as error:
                 failure = error
@@ -884,7 +913,7 @@ def prepare_external_units(units, mapping, records, chosen, certificate, team, d
             if i == 0 and failure:
                 raise InstallerError(unit["path"].name + ": " + str(failure))
             raise InstallerError(tr('No compatible imported profile for ') + unit["new_id"] +
-                tr('. Import a matching extension profile or a wildcard profile for the same certificate. ') + (str(failure) if failure else ""))
+                tr('. Import a valid profile for the same certificate and selected device. ') + (str(failure) if failure else ""))
 
 
 def pack_ipa(app, output):
@@ -935,7 +964,7 @@ def sign_and_install(config):
         legacy_installer(device)  # Check compatibility before any provisioning changes.
     metadata = inspect_ipa(config["ipa"])
     memory = bool(config.get("memory", False))
-    new_id = (external_bundle_id(metadata["bundleID"], profile_pattern(chosen[1])) if external
+    new_id = (external_bundle_id(metadata["bundleID"]) if external
               else team_bundle_id(metadata["bundleID"], team))
     if not external and config.get("bundleID", new_id) != new_id:
         raise InstallerError(tr('The identifier must match the IPA identifier plus the selected signing team suffix.'))
@@ -1074,6 +1103,8 @@ def sign_and_install(config):
                             extendedVirtualAddressing=u["effective"].get(EVA, False), evaDecision=u["eva_policy"],
                             debuggingAllowed=u["effective"].get("get-task-allow", False),
                             profileUUID=u["profile_data"].get("UUID"),
+                            applicationIdentifier=u["app_identifier"],
+                            applicationIdentifierPolicy="importedProfile" if external else "xcodeBundleDerived",
                             excludedUnsupportedCapabilities=u.get("excluded_capabilities", []),
                             excludedOriginalMemoryCapabilities=sorted(k for k in MEMORY_ENTITLEMENTS if k in u["original"] and k not in u["requested"]),
                             requestedCapabilities=sorted(u["requested"]), supportsLiveActivities=u["info"].get("NSSupportsLiveActivities"),

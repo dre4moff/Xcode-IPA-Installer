@@ -320,7 +320,7 @@ struct InstallerView: View {
                             .font(.system(.callout, design: .monospaced)).textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                         Text(L10n.text(model.usesImportedCertificate
-                                       ? "Original Bundle IDs are preserved for the app and every extension. Profiles must authorize those IDs; the app never renames them to fit a profile."
+                                       ? "Original Bundle IDs are preserved for the app and every extension. The signing App ID comes from the imported profile, independently of the bundle’s installation identifier."
                                        : "The selected Team ID is appended once. Extension identifiers follow the main app."))
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }

@@ -92,3 +92,4 @@
 "Require all original capabilities" = "Richiedi tutte le capability originali";
 "Stop if any original capability is unsupported, instead of excluding it." = "Interrompe la firma se una capability originale non è supportata, invece di escluderla.";
 "Original Bundle IDs are preserved for the app and every extension. Profiles must authorize those IDs; the app never renames them to fit a profile." = "I Bundle ID originali vengono conservati per l’app e tutte le estensioni. I profili devono autorizzarli; l’app non li rinomina per adattarli al profilo.";
+"Original Bundle IDs are preserved for the app and every extension. The signing App ID comes from the imported profile, independently of the bundle’s installation identifier." = "I Bundle ID originali vengono conservati per l’app e tutte le estensioni. L’App ID della firma deriva dal profilo importato, separatamente dall’identificativo di installazione del bundle.";

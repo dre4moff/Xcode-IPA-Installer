@@ -26,18 +26,37 @@ class ExternalAssetTests(unittest.TestCase):
         self.assertIs(actual["get-task-allow"], True)
         m.assert_capabilities(actual, prof, requested, "com.example.Fixed")
 
-    def test_exact_and_wildcard_id_rules(self):
-        vectors = [("com.original.App", "*", "com.original.App"),
-                   ("com.original.App", "com.original.*", "com.original.App"),
-                   ("com.original.App", "com.original.App", "com.original.App"),
-                   ("com.original.App", "com.*", "com.original.App")]
-        for original, pattern, expected in vectors:
-            self.assertEqual(m.external_bundle_id(original, pattern), expected)
-        for pattern in ["com.vendor.Fixed","com.vendor.*"]:
-            with self.assertRaises(m.InstallerError):m.external_bundle_id("com.original.App",pattern)
+    def test_imported_bundle_and_signing_identifiers_are_independent(self):
+        vectors = [("*", TEAM+".com.original.App"),
+                   ("com.original.*", TEAM+".com.original.App"),
+                   ("com.vendor.Fixed", TEAM+".com.vendor.Fixed"),
+                   ("com.vendor.*", TEAM+".com.vendor.com.original.App"),
+                   ("com.*", TEAM+".com.original.App")]
+        for pattern, expected in vectors:
+            prof=profile(pattern)
+            self.assertEqual(m.external_bundle_id("com.original.App"), "com.original.App")
+            app_id=m.imported_application_identifier(prof,"com.original.App")
+            self.assertEqual(app_id,expected)
+            m.assert_profile(prof,TEAM,"com.original.App",UDID,True,application_identifier=app_id)
         for pattern in ["com.*.bad", "com.example.?", "com.example.[ab]", "", "com.example.*.*"]:
-            prof = profile(pattern)
-            with self.subTest(pattern=pattern), self.assertRaises(m.InstallerError): m.profile_pattern(prof)
+            with self.subTest(pattern=pattern), self.assertRaises(m.InstallerError): m.profile_pattern(profile(pattern))
+
+    def test_imported_claim_still_must_be_authorized_and_xcode_stays_strict(self):
+        prof=profile("com.vendor.Fixed")
+        with self.assertRaises(m.InstallerError):m.assert_profile(prof,TEAM,"com.original.App",UDID,True)
+        with self.assertRaises(m.InstallerError):
+            m.assert_profile(prof,TEAM,"com.original.App",UDID,True,application_identifier=TEAM+".forged.Identifier")
+        m.assert_profile(prof,TEAM,"com.original.App",UDID,True,application_identifier=TEAM+".com.vendor.Fixed")
+
+    def test_imported_keychain_fallback_uses_the_authorized_profile_identity(self):
+        prof=profile("com.vendor.Fixed")
+        prof["Entitlements"]["keychain-access-groups"]=[TEAM+".com.vendor.Fixed"]
+        requested={"keychain-access-groups":["$(AppIdentifierPrefix)com.original.App"],m.MEMORY:True}
+        filtered,excluded=m.compatible_capabilities(prof,requested,TEAM,"com.original.App")
+        actual=m.external_effective(prof,filtered,TEAM,"com.original.App")
+        self.assertEqual(actual["keychain-access-groups"],[TEAM+".com.vendor.Fixed"])
+        self.assertEqual(actual["application-identifier"],TEAM+".com.vendor.Fixed")
+        m.assert_capabilities(actual,prof,filtered,"com.original.App")
 
     def test_import_copies_only_profiles_with_private_permissions(self):
         with tempfile.TemporaryDirectory() as temp:
