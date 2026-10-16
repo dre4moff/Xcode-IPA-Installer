@@ -40,6 +40,7 @@ final class InstallerModel: ObservableObject {
     @Published var teamID = ""
     @Published var deviceID = ""
     @Published var ipa: IPADetails?
+    @Published var bundleID = ""
     @Published var increasedMemory = true
     @Published var preserveCapabilities = true
     @Published var isBusy = false
@@ -61,7 +62,6 @@ final class InstallerModel: ObservableObject {
 
     var selectedAccount: XcodeAccount? { accounts.first { $0.id == accountID } }
     var selectedTeam: SigningTeam? { selectedAccount?.teams.first { $0.id == teamID } }
-    var bundleID: String { ipa.flatMap { TeamBundleIDPolicy.make(original: $0.bundleID, team: teamID) } ?? "" }
     var canRun: Bool {
         !isBusy && ipa != nil && selectedTeam != nil && phones.contains { $0.id == deviceID } && !bundleID.isEmpty
     }
@@ -82,14 +82,19 @@ final class InstallerModel: ObservableObject {
 
     func inspect(_ url: URL) {
         guard !isBusy else { return }
-        resultPath = nil; ipa = nil
+        resultPath = nil; ipa = nil; bundleID = ""
         call("inspect", data: ["path": url.path])
     }
 
     func syncTeam() {
         let available = selectedAccount?.teams ?? []
         if !available.contains(where: { $0.id == teamID }) { teamID = available.first?.id ?? "" }
+        updateBundleID()
         UserDefaults.standard.set(accountID, forKey: "SelectedAccount")
+    }
+
+    func updateBundleID() {
+        bundleID = ipa.flatMap { TeamBundleIDPolicy.make(original: $0.bundleID, team: teamID) } ?? ""
     }
 
     func configureTeam() {
@@ -142,7 +147,7 @@ final class InstallerModel: ObservableObject {
             status = accounts.isEmpty ? "Aggiungi un account in Xcode → Impostazioni → Apple Accounts." : "Account Xcode e dispositivi aggiornati."
         case "ipa":
             if let value = try? JSONDecoder().decode(IPADetails.self, from: data) {
-                ipa = value; status = "IPA pronta per la firma con il suffisso del team selezionato."
+                ipa = value; updateBundleID(); status = "IPA pronta per la firma con il suffisso del team selezionato."
             }
         case "phase":
             status = event["message"] as? String ?? status
@@ -353,6 +358,7 @@ struct InstallerView: View {
         .onAppear(perform: model.refresh)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.cancel() }
         .onChange(of: model.accountID) { _ in model.syncTeam() }
+        .onChange(of: model.teamID) { _ in model.updateBundleID() }
         .sheet(isPresented: $model.showTeamSetup) {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Team dell’account Xcode").font(.title3.bold())
