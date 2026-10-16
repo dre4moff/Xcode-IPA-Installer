@@ -98,5 +98,9 @@
   "The final debugging entitlement does not match the imported profile.": "Il permesso di debug della firma finale non corrisponde al profilo importato.",
   "The selected profile does not authorize Increased Memory Limit. Signing stopped.": "Il profilo selezionato non autorizza Increased Memory Limit. Firma interrotta.",
   "The imported profile is missing valid team, certificate, or expiry information.": "Il profilo importato non contiene informazioni valide su team, certificato o scadenza.",
-  "Certificate import timed out. Check any macOS Keychain prompt and try again.": "Tempo scaduto per l’importazione. Controlla le eventuali richieste del Portachiavi di macOS e riprova."
+  "Certificate import timed out. Check any macOS Keychain prompt and try again.": "Tempo scaduto per l’importazione. Controlla le eventuali richieste del Portachiavi di macOS e riprova.",
+  "Excluded unsupported capabilities for ": "Capability non autorizzate escluse per ",
+  "The imported profile authorizes ": "Il profilo importato autorizza ",
+  ", but the original app identifier is ": ", ma l’identificativo originale dell’app è ",
+  ". Import a matching or wildcard profile. Original Bundle IDs are never changed in imported-certificate mode.": ". Importa un profilo compatibile o wildcard. I Bundle ID originali non vengono modificati nella modalità con certificato importato."
 }

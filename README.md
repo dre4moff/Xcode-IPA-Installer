@@ -24,13 +24,14 @@ Choose **Signing → Imported certificate → Import certificate…**. Select a 
 
 Select the certificate and **Main app profile**. Use **Manage certificate → Add profiles…** for extension profiles belonging to that certificate. **Forget certificate** removes the app’s profile copies and metadata; the signing identity remains in Keychain Access because it may be shared with other tools. The original files are untouched.
 
-- **Exact App IDs:** the main app must use the identifier authorized by the selected profile. Extensions need profiles authorizing their derived identifiers. One exact main-app profile cannot authorize arbitrary extensions.
-- **Wildcard profiles:** compatible original identifiers are retained; an incompatible original is placed beneath the profile’s allowed prefix. A matching wildcard may cover multiple processes, subject to its capabilities.
-- The certificate, private key, team, expiry, device coverage, App ID, and requested capabilities must match for every app/extension. Missing authorization stops signing before installation. Store profiles from different certificates separately.
+- **Original Bundle IDs are always preserved** for the main app and every extension. No team suffix or replacement is added in imported-certificate mode. The selected main profile and matching extension profiles must authorize those original IDs. An incompatible exact profile produces an error; it never renames the app.
+- **Wildcard profiles:** a matching wildcard may cover multiple original process IDs, subject to its capabilities. An incompatible wildcard produces an error, preserving identifiers.
+- The certificate, private key, team, expiry, device coverage, App ID, and requested capabilities must match for every app/extension. Missing identity, App ID, device, or required memory authorization stops signing before installation. Store profiles from different certificates separately.
+- By default, supported original capabilities are retained and unsupported optional capabilities (such as CarPlay) are excluded and listed in the log/report. Supported entries in shared keychain groups are retained, with an authorized app-specific fallback when needed. Enable **Options → Require all original capabilities** to stop instead of excluding them. A feature whose permission is excluded may no longer work.
 - Increased Memory Limit is required on the main app when its checkbox is on. Original EVA is retained only when authorized by that process’s profile. Auxiliary processes remain signed without memory entitlements.
 - `get-task-allow` follows **each actual provisioning profile**, including profiles that permit debugging. This preserves eligibility for a compatible JIT tool; it does not enable JIT by itself or turn a distribution profile into a development profile. Device, OS, app, pairing, and the chosen JIT method still matter. [Apple’s provisioning-profile documentation](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)
 
-No Apple Account sign-in or remote anisette service is used in this mode, and the app does not request new profiles from Apple. Full Xcode is still needed for the bundled Python runtime and device tools. Expiry, device limits, revocation, and supported capabilities come from the imported assets. The verification report records `signingMode: imported`, `bundleIDPolicy: importedProfileAuthorization`, the certificate fingerprint, profile UUIDs, and each process’s debugging/EVA status.
+No Apple Account sign-in or remote anisette service is used in this mode, and the app does not request new profiles from Apple. Full Xcode is still needed for the bundled Python runtime and device tools. Expiry, device limits, revocation, and supported capabilities come from the imported assets. The verification report records `signingMode: imported`, `bundleIDPolicy: originalIdentifiers`, the certificate fingerprint, profile UUIDs, and each process’s debugging/EVA status.
 
 ## Interface and languages
 
@@ -74,7 +75,7 @@ zsh test.sh
 zsh build.sh "$HOME/Downloads/Xcode-IPA-Installer-build"
 ```
 
-`build.sh` creates an ad-hoc signed app and refuses to overwrite an existing destination. `test.sh` builds unsigned iOS fixtures, exercises real local ad-hoc signing for Xcode and imported-profile paths, checks identifier policy parity between Swift/Python, validates a synthetic password-protected P12 in isolated temporary keychains, and verifies English, Italian, and unsupported-language fallback in a real resource bundle. Apple provisioning and device installation are intercepted: **tests do not sign in with real accounts or install anything on an iPhone**. Both scripts clean their working directories.
+`build.sh` creates an ad-hoc signed app and refuses to overwrite an existing destination. `test.sh` builds unsigned iOS fixtures, exercises real local ad-hoc signing for Xcode and imported-profile paths, checks Xcode identifier policy parity between Swift/Python, validates a synthetic password-protected P12 in isolated temporary keychains, and verifies English, Italian, and unsupported-language fallback in a real resource bundle. Apple provisioning and device installation are intercepted: **tests do not sign in with real accounts or install anything on an iPhone**. Both scripts clean their working directories.
 
 Build checks and offline tests do not establish physical-device acceptance or runtime compatibility with every supported macOS version.
 

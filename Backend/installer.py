@@ -792,10 +792,10 @@ def import_signing_assets(config):
 
 def external_bundle_id(original, pattern):
     if not valid_bundle_id(original): raise InstallerError(tr('Invalid original app identifier.'))
-    if pattern == "*" or fnmatch.fnmatchcase(original, pattern): return original
-    value = pattern[:-1] + original if pattern.endswith(".*") else pattern
-    if not valid_bundle_id(value): raise InstallerError(tr('The profile cannot produce a valid app identifier.'))
-    return value
+    if not fnmatch.fnmatchcase(original, pattern):
+        raise InstallerError(tr('The imported profile authorizes ') + pattern + tr(', but the original app identifier is ') + original +
+            tr('. Import a matching or wildcard profile. Original Bundle IDs are never changed in imported-certificate mode.'))
+    return original
 
 
 def external_context(config):
@@ -827,7 +827,31 @@ def external_effective(profile, requested, team, bundle_id):
     return result
 
 
-def prepare_external_units(units, mapping, records, chosen, certificate, team, device, memory, preserve):
+def compatible_capabilities(profile, requested, team, bundle_id, strict=False):
+    expanded = external_effective(profile, requested, team, bundle_id)
+    authorized = profile["Entitlements"]
+    result = {}
+    excluded = []
+    for key in requested:
+        value = expanded[key]
+        if key in authorized and entitlement_allowed(authorized[key], value):
+            result[key] = value
+            continue
+        # Increased Memory Limit is an explicit user requirement, never an optional fallback.
+        if strict or key == MEMORY:
+            raise InstallerError(tr('The profile does not authorize the capability “') + key + tr('” for ') + bundle_id)
+        excluded.append(key)
+        if isinstance(value, list):
+            entries = authorized.get(key, [])
+            retained = [v for v in value if entitlement_allowed(entries, [v])]
+            if retained: result[key] = retained
+        if key == "keychain-access-groups" and key not in result:
+            fallback = profile["ApplicationIdentifierPrefix"][0] + "." + bundle_id
+            if entitlement_allowed(authorized.get(key, []), [fallback]): result[key] = [fallback]
+    return result, excluded
+
+
+def prepare_external_units(units, mapping, records, chosen, certificate, team, device, memory, preserve, strict=False):
     for i, unit in enumerate(units):
         unit["is_main"] = i == 0
         unit["memory"] = memory and i == 0
@@ -841,6 +865,7 @@ def prepare_external_units(units, mapping, records, chosen, certificate, team, d
                 allow_eva = profile["Entitlements"].get(EVA) is True
                 requested = requested_entitlements(unit["original"], mapping, team, unit["new_id"], unit["memory"],
                     preserve=preserve, main_process=unit["is_main"], allow_eva=allow_eva)
+                requested, excluded = compatible_capabilities(profile, requested, team, unit["new_id"], strict)
                 effective = external_effective(profile, requested, team, unit["new_id"])
                 assert_capabilities(effective, profile, requested, unit["new_id"])
                 assert_signature(effective, team, effective["application-identifier"], unit["memory"])
@@ -848,7 +873,10 @@ def prepare_external_units(units, mapping, records, chosen, certificate, team, d
                 assert_eva_policy(effective, requested)
                 unit.update(profile=path, profile_data=profile, identity=certificate, requested=requested, effective=effective,
                     app_identifier=effective["application-identifier"], expiry=profile["ExpirationDate"].isoformat(),
+                    excluded_capabilities=excluded,
                     eva_policy="authorizedByImportedProfile" if allow_eva else "unavailableInImportedProfile")
+                if excluded:
+                    emit("log", message=tr('Excluded unsupported capabilities for ') + unit["path"].name + ": " + ", ".join(excluded))
                 break
             except InstallerError as error:
                 failure = error
@@ -931,13 +959,9 @@ def sign_and_install(config):
             check_encryption(binary)
             units.append(dict(path=bundle, info=info, old_id=info["CFBundleIdentifier"], original=entitlements_of(bundle)))
         if external:
-            old_root = metadata["bundleID"]
-            original_bundle_ids([u["old_id"] for u in units])
-            mapping = {u["old_id"]: new_id + (u["old_id"][len(old_root):] if u["old_id"].startswith(old_root + ".")
-                       else "" if u["old_id"] == old_root else "." + u["old_id"]) for u in units}
-            original_bundle_ids(list(mapping.values()))
+            mapping = original_bundle_ids([u["old_id"] for u in units])
             prepare_external_units(units, mapping, records, chosen, certificate["id"], team, device, memory,
-                                   bool(config.get("preserveCapabilities", True)))
+                                   bool(config.get("preserveCapabilities", True)), bool(config.get("strictImportedCapabilities", False)))
         else:
             mapping = team_bundle_mapping([u["old_id"] for u in units], metadata["bundleID"], team)
         for unit in ([] if external else units):
@@ -1041,7 +1065,8 @@ def sign_and_install(config):
         report_path.write_text(json.dumps(dict(team=team, account=account["name"], personalTeam=personal_team,
             memoryRequested=memory, memoryScope="mainExecutableOnly", extendedVirtualAddressingPolicy="importedProfile" if external else "automaticForTeam",
             signingMode="imported" if external else "xcode", certificateSHA1=certificate["id"] if external else None,
-            bundleIDPolicy="importedProfileAuthorization" if external else "selectedTeamSuffix",
+            importedCapabilityPolicy=("strict" if config.get("strictImportedCapabilities") else "authorizedOnly") if external else None,
+            bundleIDPolicy="originalIdentifiers" if external else "selectedTeamSuffix",
             codeComponents=[dict(path=str(p.relative_to(root.parent)), kind="app/extension" if unit else "library/bundle", signatureVerified=True) for p,unit in plan],
             processes=[dict(bundleID=u["new_id"], originalBundleID=u["old_id"], bundleIDVerified=True,
                             team=team, mainExecutable=u["is_main"], memoryRequested=u["memory"],
@@ -1049,6 +1074,7 @@ def sign_and_install(config):
                             extendedVirtualAddressing=u["effective"].get(EVA, False), evaDecision=u["eva_policy"],
                             debuggingAllowed=u["effective"].get("get-task-allow", False),
                             profileUUID=u["profile_data"].get("UUID"),
+                            excludedUnsupportedCapabilities=u.get("excluded_capabilities", []),
                             excludedOriginalMemoryCapabilities=sorted(k for k in MEMORY_ENTITLEMENTS if k in u["original"] and k not in u["requested"]),
                             requestedCapabilities=sorted(u["requested"]), supportsLiveActivities=u["info"].get("NSSupportsLiveActivities"),
                             extensionPoint=u["info"].get("NSExtension",{}).get("NSExtensionPointIdentifier")) for u in units]), indent=2, ensure_ascii=False)+"\n")

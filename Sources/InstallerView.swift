@@ -239,7 +239,7 @@ struct InstallerView: View {
                     .accessibilityLabel(L10n.text("Manage certificate"))
                 }
             }
-            Text(L10n.text("Extensions use matching profiles from the same certificate. Missing permissions stop signing with an explanation."))
+            Text(L10n.text("Extensions use matching profiles from the same certificate. Unsupported optional capabilities are excluded and listed in the report."))
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -320,14 +320,21 @@ struct InstallerView: View {
                             .font(.system(.callout, design: .monospaced)).textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                         Text(L10n.text(model.usesImportedCertificate
-                                       ? "The imported profile controls the identifier. Exact App IDs are used as supplied; wildcard profiles keep compatible original IDs."
+                                       ? "Original Bundle IDs are preserved for the app and every extension. Profiles must authorize those IDs; the app never renames them to fit a profile."
                                        : "The selected Team ID is appended once. Extension identifiers follow the main app."))
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     Divider().opacity(0.5)
                     Toggle(L10n.text("Keep original capabilities"), isOn: $model.preserveCapabilities).toggleStyle(.switch)
-                    Text(L10n.text("Requests the IPA’s capabilities from your team. Turning this off may affect App Groups, iCloud, or push notifications."))
+                    Text(L10n.text(model.usesImportedCertificate
+                                   ? "Keeps capabilities authorized by each profile. Excluded capabilities may affect CarPlay, App Groups, iCloud, or push. Signing identity and the memory option remain required."
+                                   : "Requests the IPA’s capabilities from your team. Turning this off may affect App Groups, iCloud, or push notifications."))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if model.usesImportedCertificate && model.preserveCapabilities {
+                        Toggle(L10n.text("Require all original capabilities"), isOn: $model.strictImportedCapabilities).toggleStyle(.switch)
+                        Text(L10n.text("Stop if any original capability is unsupported, instead of excluding it."))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     if !model.usesImportedCertificate {
                         Button(L10n.text("Set up team…"), action: model.configureTeam).disabled(model.selectedAccount == nil)
                     }

@@ -29,10 +29,12 @@ class ExternalAssetTests(unittest.TestCase):
     def test_exact_and_wildcard_id_rules(self):
         vectors = [("com.original.App", "*", "com.original.App"),
                    ("com.original.App", "com.original.*", "com.original.App"),
-                   ("com.original.App", "com.vendor.Fixed", "com.vendor.Fixed"),
-                   ("com.original.App", "com.vendor.*", "com.vendor.com.original.App")]
+                   ("com.original.App", "com.original.App", "com.original.App"),
+                   ("com.original.App", "com.*", "com.original.App")]
         for original, pattern, expected in vectors:
             self.assertEqual(m.external_bundle_id(original, pattern), expected)
+        for pattern in ["com.vendor.Fixed","com.vendor.*"]:
+            with self.assertRaises(m.InstallerError):m.external_bundle_id("com.original.App",pattern)
         for pattern in ["com.*.bad", "com.example.?", "com.example.[ab]", "", "com.example.*.*"]:
             prof = profile(pattern)
             with self.subTest(pattern=pattern), self.assertRaises(m.InstallerError): m.profile_pattern(prof)
@@ -87,6 +89,29 @@ class ExternalAssetTests(unittest.TestCase):
     def test_imported_paths_cannot_escape_asset_directory(self):
         for value in ["../private", "A" * 39, "g" * 40, "/tmp/keychain"]:
             with self.assertRaises(m.InstallerError): m.asset_directory(value)
+
+    def test_compatibility_filter_preserves_authorized_groups_and_required_memory(self):
+        prof = profile("com.example.App")
+        ent = prof["Entitlements"]
+        ent["keychain-access-groups"] = [TEAM + ".com.example.App"]
+        ent["com.apple.security.application-groups"] = ["group.allowed"]
+        requested = {m.MEMORY: True, "com.apple.developer.carplay-audio": True,
+                     "keychain-access-groups": [TEAM + ".original.oldgroup"],
+                     "com.apple.security.application-groups": ["group.allowed", "group.denied"]}
+        effective, excluded = m.compatible_capabilities(prof, requested, TEAM, "com.example.App")
+        self.assertIs(effective[m.MEMORY], True)
+        self.assertEqual(effective["keychain-access-groups"], [TEAM + ".com.example.App"])
+        self.assertEqual(effective["com.apple.security.application-groups"], ["group.allowed"])
+        self.assertNotIn("com.apple.developer.carplay-audio", effective)
+        self.assertIn("com.apple.developer.carplay-audio", excluded)
+        self.assertIn("keychain-access-groups", excluded)
+        ent.pop(m.MEMORY)
+        with self.assertRaises(m.InstallerError): m.compatible_capabilities(prof, requested, TEAM, "com.example.App")
+
+    def test_strict_profile_capabilities_never_silently_drop_permissions(self):
+        prof = profile("*")
+        with self.assertRaises(m.InstallerError):
+            m.compatible_capabilities(prof, {"com.apple.developer.carplay-audio": True}, TEAM, "com.example.App", strict=True)
 
 
 if __name__ == "__main__": unittest.main()

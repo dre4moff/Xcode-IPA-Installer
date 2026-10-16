@@ -87,3 +87,8 @@
 "Profiles selected: %d" = "Profiles selected: %d";
 "The private key is imported into your macOS default Keychain. The P12 password is not saved. macOS may ask you to allow Keychain access." = "The private key is imported into your macOS default Keychain. The P12 password is not saved. macOS may ask you to allow Keychain access.";
 "Import" = "Import";
+"Extensions use matching profiles from the same certificate. Unsupported optional capabilities are excluded and listed in the report." = "Extensions use matching profiles from the same certificate. Unsupported optional capabilities are excluded and listed in the report.";
+"Keeps capabilities authorized by each profile. Excluded capabilities may affect CarPlay, App Groups, iCloud, or push. Signing identity and the memory option remain required." = "Keeps capabilities authorized by each profile. Excluded capabilities may affect CarPlay, App Groups, iCloud, or push. Signing identity and the memory option remain required.";
+"Require all original capabilities" = "Require all original capabilities";
+"Stop if any original capability is unsupported, instead of excluding it." = "Stop if any original capability is unsupported, instead of excluding it.";
+"Original Bundle IDs are preserved for the app and every extension. Profiles must authorize those IDs; the app never renames them to fit a profile." = "Original Bundle IDs are preserved for the app and every extension. Profiles must authorize those IDs; the app never renames them to fit a profile.";

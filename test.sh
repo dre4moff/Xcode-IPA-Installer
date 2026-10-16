@@ -43,7 +43,7 @@ xcrun swiftc -parse-as-library -swift-version 5 -target arm64-apple-macosx12.0 \
     > "$test_temp/certificate-build.log" 2>&1 || { cat "$test_temp/certificate-build.log"; exit 1; }
 "$test_temp/certificate-tests" "$test_temp"
 xcrun swiftc -parse-as-library -swift-version 5 -module-cache-path "$test_temp/SwiftModules" \
-    "$project_dir/Sources/TeamBundleIDPolicy.swift" "$project_dir/Sources/ImportedBundleIDPolicy.swift" \
+    "$project_dir/Sources/TeamBundleIDPolicy.swift" \
     "$project_dir/Tests/TeamBundleIDPolicyTests.swift" -o "$test_temp/policy-tests"
 "$test_temp/policy-tests" > "$test_temp/swift-policy.json"
 xcrun python3 - <<'PY'
@@ -54,9 +54,8 @@ spec=importlib.util.spec_from_file_location('installer',root/'Backend/installer.
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 values=json.loads((Path(os.environ['XCODE_IPA_TEMP'])/'swift-policy.json').read_text())
 for v in values:
-    actual=(m.external_bundle_id(v['original'],v['pattern']) if 'pattern' in v else m.team_bundle_id(v['original'],v['team']))
-    assert actual==v['bundleID']
-print('Swift/Python identifier parity: 3 team-suffix and 4 imported-profile vectors passed')
+    assert m.team_bundle_id(v['original'],v['team'])==v['bundleID']
+print('Swift/Python team-suffix parity: 3 vectors passed')
 PY
 localization_app="$test_temp/LocalizationTests.app"
 mkdir -p "$localization_app/Contents/MacOS" "$localization_app/Contents/Resources"

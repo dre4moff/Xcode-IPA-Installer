@@ -87,3 +87,8 @@
 "Profiles selected: %d" = "Profili selezionati: %d";
 "The private key is imported into your macOS default Keychain. The P12 password is not saved. macOS may ask you to allow Keychain access." = "La chiave privata viene importata nel Portachiavi predefinito di macOS. La password del P12 non viene salvata. macOS potrebbe chiederti di consentire l’accesso al Portachiavi.";
 "Import" = "Importa";
+"Extensions use matching profiles from the same certificate. Unsupported optional capabilities are excluded and listed in the report." = "Le estensioni usano profili compatibili dello stesso certificato. Le capability opzionali non autorizzate vengono escluse ed elencate nel rapporto.";
+"Keeps capabilities authorized by each profile. Excluded capabilities may affect CarPlay, App Groups, iCloud, or push. Signing identity and the memory option remain required." = "Mantiene le capability autorizzate da ogni profilo. Quelle escluse possono influire su CarPlay, App Groups, iCloud o push. L’identità di firma e l’opzione memoria restano obbligatorie.";
+"Require all original capabilities" = "Richiedi tutte le capability originali";
+"Stop if any original capability is unsupported, instead of excluding it." = "Interrompe la firma se una capability originale non è supportata, invece di escluderla.";
+"Original Bundle IDs are preserved for the app and every extension. Profiles must authorize those IDs; the app never renames them to fit a profile." = "I Bundle ID originali vengono conservati per l’app e tutte le estensioni. I profili devono autorizzarli; l’app non li rinomina per adattarli al profilo.";

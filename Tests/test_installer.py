@@ -261,7 +261,7 @@ class OfflinePipelineTests(unittest.TestCase):
     """Real local ad-hoc signing/ZIP verification; Apple provisioning/install always intercepted."""
     def scenario(self, memory, wrong_team=False, main_memory_missing=False, original_eva=False,
                  personal_team=False, eva_rejected=False, unrelated_rejection=False, rename_attempt=False,
-                 already_suffixed=False, external=False, debug=False, wildcard=False, missing_extension=False):
+                 already_suffixed=False, external=False, debug=False, wildcard=False, missing_extension=False, unsupported_capability=False, strict_imported=False):
         fixture = Path(os.environ["XCODE_IPA_FIXTURES"])
         events, commands = [], []
         real_run = m.run
@@ -273,7 +273,7 @@ class OfflinePipelineTests(unittest.TestCase):
             companion=app/"Companions/Companion.app";companion.parent.mkdir()
             shutil.copytree(fixture/"Provision0.app",companion)
             original_id="local.fixture.app"+("."+TEAM if already_suffixed else "")
-            target_id=(original_id if wildcard else "local.external.App") if external else "local.fixture.app."+TEAM
+            target_id=original_id if external else "local.fixture.app."+TEAM
             fingerprint=hashlib.sha1(b"fixture-certificate").hexdigest().upper()
             external_records=[]
             if external:
@@ -299,9 +299,12 @@ class OfflinePipelineTests(unittest.TestCase):
                 shutil.copyfile(library,container/"BinaryCore")
                 (container/"Info.plist").write_bytes(plistlib.dumps(dict(CFBundleExecutable="BinaryCore",CFBundleIdentifier="local.fixture."+container.stem,CFBundlePackageType="FMWK",CFBundleVersion="1")))
             loose=app/"Assets/LooseLibrary";loose.parent.mkdir();shutil.copyfile(library,loose)
-            if original_eva:
+            if original_eva or unsupported_capability:
                 entpath = temp/"original.entitlements"
-                entpath.write_bytes(plistlib.dumps({m.EVA: True, m.MEMORY: True, "com.apple.security.application-groups": ["group.fixture"]}))
+                original_ent={m.MEMORY: True, "com.apple.security.application-groups": ["group.fixture"]}
+                if original_eva:original_ent[m.EVA]=True
+                if unsupported_capability:original_ent["com.apple.developer.carplay-audio"]=True
+                entpath.write_bytes(plistlib.dumps(original_ent))
                 real_run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements", entpath, "--timestamp=none", app], quiet=True)
             source = temp/"input.ipa"; m.pack_ipa(app, source)
             original_infos={str(p.relative_to(app)):p.read_bytes() for p in app.rglob("Info.plist")}
@@ -360,12 +363,12 @@ class OfflinePipelineTests(unittest.TestCase):
                 config = dict(account=ACCOUNT["id"],team=TEAM,device="fixture",ipa=str(source),memory=memory,
                               outputDirectory=str(temp/"Output"),install=True)
                 if external:
-                    config.update(signingMode="imported",certificate=fingerprint,profile="fixture")
+                    config.update(signingMode="imported",certificate=fingerprint,profile="fixture",strictImportedCapabilities=strict_imported)
                     context=(dict(id=fingerprint,name="Imported fixture",team=TEAM),external_records,external_records[0])
                     context_patch=patch.object(m,"external_context",return_value=context)
                     context_patch.start();self.addCleanup(context_patch.stop)
                 if rename_attempt:config["bundleID"]="local.fixture.app."+OTHER
-                if wrong_team or main_memory_missing or unrelated_rejection or rename_attempt or missing_extension:
+                if wrong_team or main_memory_missing or unrelated_rejection or rename_attempt or missing_extension or (unsupported_capability and strict_imported):
                     with self.assertRaises(m.InstallerError): m.sign_and_install(config)
                     self.assertFalse(any("devicectl" in c for c in commands))
                     if unrelated_rejection: self.assertEqual(sum("xcodebuild" in c for c in commands), 1)
@@ -402,8 +405,11 @@ class OfflinePipelineTests(unittest.TestCase):
                 self.assertEqual(widget_info["NSExtension"]["NSExtensionPointIdentifier"],"com.apple.widgetkit-extension")
                 verification=json.loads(Path(complete["report"]).read_text())
                 self.assertEqual(len(verification["codeComponents"]),6)
+                if unsupported_capability:
+                    self.assertNotIn("com.apple.developer.carplay-audio",m.entitlements_of(signed))
+                    self.assertIn("com.apple.developer.carplay-audio",verification["processes"][0]["excludedUnsupportedCapabilities"])
                 self.assertEqual(verification["memoryScope"],"mainExecutableOnly")
-                self.assertEqual(verification["bundleIDPolicy"],"importedProfileAuthorization" if external else "selectedTeamSuffix")
+                self.assertEqual(verification["bundleIDPolicy"],"originalIdentifiers" if external else "selectedTeamSuffix")
                 self.assertTrue(all(p["bundleID"]==target_id+p["originalBundleID"][len(original_id):] and p["bundleIDVerified"] for p in verification["processes"]))
                 self.assertEqual(verification["processes"][0]["extendedVirtualAddressing"],expected_eva)
                 self.assertEqual(sum(p["memoryRequested"] for p in verification["processes"]),int(memory))
@@ -437,6 +443,8 @@ class OfflinePipelineTests(unittest.TestCase):
     def test_imported_memory_permission_is_required(self):self.scenario(True,external=True,main_memory_missing=True)
     def test_imported_wrong_team_cannot_install(self):self.scenario(True,external=True,wrong_team=True)
 
+    def test_imported_unsupported_carplay_is_excluded_without_losing_memory_or_other_components(self):self.scenario(True,external=True,unsupported_capability=True)
+    def test_imported_strict_capabilities_stop_before_install(self):self.scenario(True,external=True,unsupported_capability=True,strict_imported=True)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

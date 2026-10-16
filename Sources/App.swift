@@ -54,6 +54,7 @@ final class InstallerModel: ObservableObject {
     @Published var bundleID = ""
     @Published var increasedMemory = true
     @Published var preserveCapabilities = true
+    @Published var strictImportedCapabilities = false
     @Published var isBusy = false
     @Published var isInstalling = false
     @Published var progress = 0.0
@@ -117,8 +118,8 @@ final class InstallerModel: ObservableObject {
     }
 
     func updateBundleID() {
-        if usesImportedCertificate, let profile = selectedProfile, let ipa {
-            bundleID = ImportedBundleIDPolicy.make(original: ipa.bundleID, pattern: profile.bundlePattern)
+        if usesImportedCertificate, selectedProfile != nil, let ipa {
+            bundleID = ipa.bundleID
         } else if !usesImportedCertificate {
             bundleID = ipa.flatMap { TeamBundleIDPolicy.make(original: $0.bundleID, team: teamID) } ?? ""
         } else { bundleID = "" }
@@ -194,6 +195,7 @@ final class InstallerModel: ObservableObject {
         progress = 0; logs = ""; resultPath = nil; verificationPath = nil; errorMessage = nil; isInstalling = true
         let data: [String: Any] = ["account": accountID, "team": teamID, "device": deviceID,
             "signingMode": signingMode, "certificate": certificateID, "profile": profileID,
+            "strictImportedCapabilities": strictImportedCapabilities,
             "ipa": ipa.path, "memory": increasedMemory, "install": install,
             "preserveCapabilities": preserveCapabilities]
         call("run", data: data)

@@ -98,5 +98,9 @@
   "The final debugging entitlement does not match the imported profile.": "The final debugging entitlement does not match the imported profile.",
   "The selected profile does not authorize Increased Memory Limit. Signing stopped.": "The selected profile does not authorize Increased Memory Limit. Signing stopped.",
   "The imported profile is missing valid team, certificate, or expiry information.": "The imported profile is missing valid team, certificate, or expiry information.",
-  "Certificate import timed out. Check any macOS Keychain prompt and try again.": "Certificate import timed out. Check any macOS Keychain prompt and try again."
+  "Certificate import timed out. Check any macOS Keychain prompt and try again.": "Certificate import timed out. Check any macOS Keychain prompt and try again.",
+  "Excluded unsupported capabilities for ": "Excluded unsupported capabilities for ",
+  "The imported profile authorizes ": "The imported profile authorizes ",
+  ", but the original app identifier is ": ", but the original app identifier is ",
+  ". Import a matching or wildcard profile. Original Bundle IDs are never changed in imported-certificate mode.": ". Import a matching or wildcard profile. Original Bundle IDs are never changed in imported-certificate mode."
 }
