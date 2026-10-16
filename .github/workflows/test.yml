@@ -1,0 +1,26 @@
+name: Offline checks
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Offline signing and entitlement checks
+        run: zsh test.sh
+      - name: Build macOS app
+        run: zsh build.sh "$RUNNER_TEMP/XcodeIPAInstaller-build"
